@@ -27,7 +27,7 @@ test('全屏舞台：位置不变的新轮次和重新生成都朗读，普通�
     tavernSpeech: { speak: async input => { heard.push(input); return true } },
     document: { addEventListener() {}, removeEventListener() {} },
     window: { setTimeout, clearTimeout },
-    TavernStageReadButton() {}, TavernStageSceneView() {}
+    TavernStageReadButton() {}, TavernStageSceneView() {}, TavernMusicToggle() {}
   })
   const draw = () => { cursor = 0; render({ sessionId: 'game', data: {}, reader }) }
   draw()

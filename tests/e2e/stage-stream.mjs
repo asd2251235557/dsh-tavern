@@ -43,6 +43,8 @@ try {
   const model = { provider: 'stage-stream-fixture', model: 'fixed' }
   await rpc('updateTavernSettings', { patch: { defaultForegroundModel: model, defaultBackgroundModel: model } })
   await stageStateChecks({ page, output, async inspect({ stage, call, sessionId }) {
+    // The model picker lives in the chat composer, below the fullscreen stage.
+    await page.keyboard.press('Escape'); await stage.waitFor({ state: 'detached' })
     const selector = page.getByRole('button', { name: /Select model/ })
     if (!(await selector.innerText()).includes('Synthetic stage stream')) {
       await selector.click()
@@ -53,12 +55,13 @@ try {
     await until(async () => (await selector.innerText()).includes('Synthetic stage stream'))
     assert.match(await selector.innerText(), /Synthetic stage stream/)
     await call('setConversationBackgroundModel', { sessionId, backgroundModel: model, backgroundTasks: { variables: false, posture: false, characterDesign: false, ledger: false, styleReference: false }, webSearchEnabled: false })
+    await page.getByRole('button', { name: '舞台', exact: true }).click(); await stage.waitFor()
     const initial = readGameSave(Buffer.from((await call('exportGameSave', { sessionId, images: false })).base64, 'base64'))
     const store = createChatJournalStore({ dataRoot }), data = createPluginData({ store: { readJson: async path => JSON.parse(await readFile(join(dataRoot, path), 'utf8')) } })
     const saved = async () => ({ chat: await store.read(initial.chat.id), plugins: { data: await data.snapshot(initial.chat.id) } })
     const records = save => save.plugins.data.owners['dsh-tavern.stage'].turns
     const view = () => call('castStage', { sessionId, count: 1 })
-    const send = async marker => { const box = page.getByRole('textbox', { name: /发消息|Message/ }); await box.fill(marker); await box.press('Enter') }
+    const send = async marker => { await stage.getByRole('button', { name: '跳过', exact: true }).click(); const box = stage.getByRole('textbox', { name: '舞台输入' }); await box.fill(marker); await stage.getByRole('button', { name: '发送', exact: true }).click() }
     await control('arm', 'normal')
     await send('C07B_FLOW')
     await until(async () => (await control()).foreground === 1)
@@ -99,7 +102,7 @@ try {
       await page.waitForFunction(() => window.stageStreamPlays.length === 2)
     }
     const plays = await page.evaluate(() => window.stageStreamPlays)
-    await page.reload(); await stage.waitFor()
+    await page.reload(); await page.getByRole('button', { name: '舞台', exact: true }).click(); await stage.waitFor()
     await page.waitForTimeout(1500)
     assert.equal(await page.evaluate(() => window.stageStreamPlays.length), 0, 'refresh never replays')
     const refreshed = await view()
@@ -110,12 +113,14 @@ try {
     await send('C07B_CANCEL')
     await until(async () => (await control()).foreground === 2)
     if (!baseline) await until(async () => (await control()).requests.some(item => item.mode === 'late'))
+    await page.keyboard.press('Escape')
     await page.locator('button[aria-label*="Stop" i], button[aria-label*="停止"], button[aria-label*="Interrupt" i], button[aria-label*="中断"]').filter({ visible: true }).last().click()
     await control('late')
     if (!baseline) await until(async () => (await control()).late === 1)
     await until(async () => !(await view()).turns.at(-1).key.startsWith('stage-stream:') || (await view()).turns.at(-1).key === final.turns.at(-1).key)
     assert.deepEqual(records(await saved()), records(finalSave), 'cancelled late output cannot overwrite the committed record')
     assert.deepEqual((await view()).stage, final.stage)
+    await page.getByRole('button', { name: '舞台', exact: true }).click()
     await page.screenshot({ path: join(output, 'cancelled-late-result.png') })
     const evidence = { baseline, plays, first, beforeSubmitRecords: records(beforeSubmit), final, refreshed, audit, afterCancel: await control(), cancelledRecords: records(await saved()) }
     await writeFile(join(output, 'stream.json'), JSON.stringify(evidence, null, 2))

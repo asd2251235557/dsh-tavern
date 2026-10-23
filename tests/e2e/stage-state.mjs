@@ -78,7 +78,9 @@ export async function stageStateChecks({ page, output, demo = false, bodyText = 
   await group.waitFor()
   if (await group.getAttribute('aria-expanded') === 'false') await group.click()
   await page.getByText(title, { exact: true }).first().click()
-  const stage = page.locator('.dsh-tavern-stage-section').filter({ visible: true })
+  const stage = page.locator('.dsh-tavern-stage-overlay')
+  const open = async () => { if (!await stage.isVisible()) await page.getByRole('button', { name: '舞台', exact: true }).click() }
+  await open()
   await stage.waitFor()
   await stage.locator('.dsh-tavern-stage-name').filter({ hasText: name }).waitFor()
   const snapshot = async label => {
@@ -102,7 +104,7 @@ export async function stageStateChecks({ page, output, demo = false, bodyText = 
   await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'A quiet moment passes.' }).waitFor()
   const next = await snapshot('stage-next-turn')
   await page.reload()
-  await stage.waitFor()
+  await open(); await stage.waitFor()
   await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'A quiet moment passes.' }).waitFor()
   const reloaded = await snapshot('stage-reloaded')
   const result = { demo, performance, submitted, accepted, directorRun, before, next, reloaded, carriesTurn: next.figures[0]?.name === name, carriesReload: reloaded.figures[0]?.name === name,
@@ -116,7 +118,7 @@ export async function stageStateChecks({ page, output, demo = false, bodyText = 
   result.longSilence = await snapshot('stage-long-silence')
   assert.deepEqual(result.longSilence.figures, before.figures, 'The cast must not depend on the recent-turn window')
   if (!demo) assert.deepEqual(result.longSilence.stage, before.stage, 'count=1 still receives the full historical state')
-  await stage.getByRole('button', { name: '全屏舞台', exact: true }).click()
+  await open()
   const fullscreen = page.locator('.dsh-tavern-stage-overlay')
   await fullscreen.locator('.dsh-tavern-stage-figure img').waitFor()
   assert.equal(await fullscreen.locator('.dsh-tavern-stage-figure').getAttribute('data-speaker'), name)
@@ -138,7 +140,7 @@ export async function stageStateChecks({ page, output, demo = false, bodyText = 
     await group.waitFor()
     if (await group.getAttribute('aria-expanded') === 'false') await group.click()
     await page.getByText(clearTitle, { exact: true }).first().click()
-    await stage.waitFor()
+    await open(); await stage.waitFor()
     await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'Quiet interval 5.' }).waitFor()
     const clearedState = await call('castStage', { sessionId: cleared.sessionId, count: 1 })
     assert.deepEqual(clearedState.stage, { figures: [], background: null, music: null })

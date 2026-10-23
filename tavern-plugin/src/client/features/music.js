@@ -60,7 +60,7 @@
 			const music = useTavernMusic();
 			if (!music.track) return null;
 			const label = music.enabled ? "关闭音乐" : "打开音乐";
-			return h("button", { type: "button", className: "dsh-tavern-stage-head-btn" + (music.enabled ? "" : " is-off"), "aria-pressed": music.enabled, "aria-label": label,
+			return h("button", { type: "button", className: music.enabled ? "is-on" : "", "aria-pressed": music.enabled, "aria-label": label,
 				title: (music.track.title ? "♪ " + music.track.title + "\n" : "") + label,
 				onClick: function () { tavernMusic.setEnabled(!music.enabled); } }, music.enabled ? "♪ 音乐" : "♪ 静音");
 		}

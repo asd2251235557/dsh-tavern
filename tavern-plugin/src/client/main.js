@@ -843,6 +843,8 @@ window.__ModuleLoader__.load({
 
 // @include-domain cast-stage-state.js
 // @include-domain stage-performance-playback.js
+// @include modules/stage-runtime.js
+// @include features/stage-runtime.js
 // @include features/cast-stage.js
 
 // @include ui/message-frame.js
@@ -929,6 +931,7 @@ window.__ModuleLoader__.load({
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
 			tavernSessionSignals = signals;
+			ctx.effect(() => tavernStageRuntime.start(ctx.sessions), "dsh-tavern: session-owned stage runtime");
 			ctx.effect(function () { return function () { if (tavernSessionSignals === signals) tavernSessionSignals = undefined; }; }, "dsh-tavern: remote session signals");
 			ctx.effect(function () { return tavernRuntimeGenerationMonitor.start(); }, "dsh-tavern: runtime generation monitor");
 			function reconcileLibraryTabTitles() {

@@ -282,7 +282,7 @@ window.__ModuleLoader__.load({
 })
 ```
 
-`registerStageView` 就是挂进呈现层的那一下：注册之后，右侧栏的舞台和全屏舞台都改用插件的画面。分工是这样的：
+`registerStageView` 就是挂进呈现层的那一下：注册之后，全屏舞台改用插件的画面。分工是这样的：
 
 | Tavern 负责 | 插件负责 |
 | --- | --- |

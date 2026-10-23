@@ -173,7 +173,7 @@
 						provider && provider.key ? h("label", null, (provider.keyLabel || "API Key") + (provider.hasKey ? "（已保存，留空沿用）" : ""),
 							h("input", { type: "password", value: apiKey, autoComplete: "new-password", disabled: busy, "aria-label": provider.keyLabel || "API Key",
 								onChange: function (event) { setApiKey(event.target.value); } })) : null),
-					section("声音", "每个人物的声音在酒馆状态 → 舞台 →「角色素材」里单独选，没选的用默认声音。",
+					section("声音", "每个人物的声音在酒馆状态 →「角色素材」里单独选，没选的用默认声音。",
 						field("voice", "默认声音", provider && provider.browser ? "留空用系统默认中文语音" : "", "dsh-tavern-speech-voices"),
 						field("narratorVoice", "旁白声音", "留空则旁白不念", "dsh-tavern-speech-voices"),
 						h(TavernVoiceOptions, { id: "dsh-tavern-speech-voices", provider: provider })),

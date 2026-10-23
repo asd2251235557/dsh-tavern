@@ -329,7 +329,7 @@
 						h("section", { className: "dsh-tavern-status-section dsh-tavern-status-support" },
 							h("span", null, "遇到问题？卡不能玩、显示异常、太卡太慢，或者有疑问，都可以交给调试 Agent。"),
 							h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-debug-open" })),
-                        props.submitStage ? h(TavernStageSection, { sessionId: props.sessionId, submit: props.submitStage, generating: running }) : null,
+                        props.submitStage ? h(TavernStageStatus, { key: props.sessionId, sessionId: props.sessionId, submit: props.submitStage, generating: running }) : null,
                         h(TavernBackgroundWait, {sessionId:props.sessionId, activity:view.activity}),
                         h(TavernSaveUpgrade, {key:props.sessionId,sessionId:props.sessionId,busy:running || view.activity?.busy || view.settleStatus === "running"}),
 					["story", "script"].includes(view.mode || "story") && view.requestMode !== "sillytavern" && cardReloadLine ? h("section", { className: "dsh-tavern-status-section" },
@@ -1154,6 +1154,10 @@
                     return React.createElement(TavernHeaderItems, Object.assign({}, props, { ctx: ctx, sessions: ctx.sessions, openStatus: sessionId => openTavernSidebarTab(ctx, { type: "dsh-tavern:status" }, { sessionId }) }));
                 }
             )), "dsh-tavern: header items");
+            ctx.effect(() => slots.inject("conversation.session.header.utilities", () => slots.register(
+                { name: "conversation.session.header.utilities", id: "dsh-tavern-stage-entry", order: 83 },
+                props => React.createElement(TavernStageEntry, { key: props.sessionId, sessionId: props.sessionId, sessions: ctx.sessions, submit: submitTavernStageInput, header: true })
+            )), "dsh-tavern: fullscreen stage entry");
 			ctx.effect(() => tavernPanelRegistry.onPin(sessionId => openTavernSidebarTab(ctx, { type: "dsh-tavern:status" }, { sessionId })), "dsh-tavern: reveal pinned panels");
 			ctx.effect(() => ctx.betterSidebar.registerTab({
 				id: "dsh-tavern:status",

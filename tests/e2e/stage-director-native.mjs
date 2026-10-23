@@ -67,6 +67,10 @@ export function apply(ctx) {
   await call('setCardStage', { path: card.path, enabled: true })
   await call('setConversationBackgroundModel', { sessionId, backgroundModel: model, backgroundTasks: { variables: false, posture: false, characterDesign: false, ledger: false, styleReference: false }, webSearchEnabled: false })
   await call('renameConversation', { sessionId, title: 'Native director verification' })
+  if (process.argv.includes('--runtime')) {
+    const other = await call('importChatHistoryText', { cardPath: card.path, text, fileName: 'runtime-other.jsonl' })
+    await call('renameConversation', { sessionId: other.sessionId, title: 'Runtime other session' })
+  }
   await page.reload()
   const group = page.locator('.dsh-tavern-history-group-toggle').filter({ hasText: 'Native Nora' })
   await group.waitFor(); if (await group.getAttribute('aria-expanded') === 'false') await group.click()
@@ -90,10 +94,39 @@ export function apply(ctx) {
   const save = readGameSave(Buffer.from((await call('exportGameSave', { sessionId, images: false })).base64, 'base64'))
   const records = save.plugins.data.owners['dsh-tavern.stage'].turns
   assert.equal(records.length, 1); assert.equal(records[0].data.delta.figures[0].speaker, 'Native Nora')
-  const stage = page.locator('.dsh-tavern-stage-section').filter({ visible: true })
-  await stage.locator('.dsh-tavern-stage-figure').waitFor()
+  const stage = page.locator('.dsh-tavern-stage-overlay')
+  const open = async () => { await page.getByRole('button', { name: '舞台', exact: true }).click(); await stage.waitFor() }
+  assert.equal(await page.locator('.dsh-tavern-status .dsh-tavern-stage-scene').count(), 0, 'no sidebar stage')
+  await open(); await stage.locator('.dsh-tavern-stage-figure').waitFor()
   await page.screenshot({ path: join(output, 'native-director.png') })
-  await page.reload(); await stage.waitFor()
+  if (process.argv.includes('--runtime')) {
+    const src = () => stage.locator('.dsh-tavern-stage-figure img').getAttribute('src'), sprite = await src(), stageChanged = () => page.evaluate(() => window.dispatchEvent(new Event('dsh-tavern-card-stage-changed')))
+    // Both entries open the same session snapshot: the header 「舞台」 and 酒馆状态's 「全屏舞台」.
+    await page.keyboard.press('Escape'); await stage.waitFor({ state: 'detached' }); await page.getByRole('button', { name: '全屏舞台', exact: true }).click()
+    assert.equal(await src(), sprite)
+    // page.route cannot intercept the app's custom scheme; fail castStage at the page fetch boundary.
+    await page.evaluate(() => { const fetch = window.fetch; window.stageReadFailures = 0; window.restoreStageRead = () => { window.fetch = fetch }
+      window.fetch = function (url) { return String(url).endsWith('/api/dsh-tavern/castStage') ? (window.stageReadFailures++, Promise.resolve(new Response('{"ok":false,"error":"synthetic read failure"}', { status: 500 }))) : fetch.apply(this, arguments) } })
+    await stageChanged(); await until(() => page.evaluate(() => window.stageReadFailures > 0)); await page.waitForTimeout(300)
+    assert.equal(await src(), sprite)
+    await page.keyboard.press('Escape'); await open()
+    assert.equal(await src(), sprite, 'failed reads do not clear the reopened scene')
+    await page.evaluate(() => window.restoreStageRead()); await page.keyboard.press('Escape')
+    await page.getByText('Runtime other session', { exact: true }).first().click(); await open()
+    assert.equal(await stage.locator('.dsh-tavern-stage-figure').count(), 0)
+    await page.keyboard.press('Escape')
+    await page.getByText('Native director verification', { exact: true }).first().click(); await open()
+    await stage.locator('.dsh-tavern-stage-figure img').waitFor(); assert.equal(await src(), sprite)
+    await call('setCardStage', { path: card.path, enabled: false }); await stageChanged(); await stage.waitFor({ state: 'hidden' })
+    await call('setCardStage', { path: card.path, enabled: true }); await stageChanged(); await stage.locator('.dsh-tavern-stage-figure img').waitFor()
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.screenshot({ path: join(output, 'runtime-mobile.png') })
+    await page.setViewportSize({ width: 1400, height: 1000 })
+    const after = readGameSave(Buffer.from((await call('exportGameSave', { sessionId, images: false })).base64, 'base64'))
+    assert.deepEqual(after.plugins.data.owners['dsh-tavern.stage'].turns, records, 'views do not write direction history')
+    assert.equal((await requests()).length, 2, 'switching and remounting never generate')
+  }
+  await page.reload(); await open(); await stage.locator('.dsh-tavern-stage-figure img').waitFor()
   assert.deepEqual((await view()).stage, final.stage)
   assert.equal((await requests()).length, 2, 'refresh does not generate')
   await writeFile(join(output, 'native-director.json'), JSON.stringify({ sessionId, audit, records, final }, null, 2))
