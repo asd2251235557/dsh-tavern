@@ -2160,10 +2160,12 @@ export async function apply(ctx) {
     }
     const manifest = await castAssets.read(card.path)
     const background = (manifest.backgrounds || [])[0]
+    const cast = await castView(sessionId, card.path, manifest)
+    const initialFigures = await castPresentation.beforeTurn(str(sessionId), turns.at(-1)?.turn, { player: card.player, cast })
     // The stage is the card's choice: off for ordinary cards, on when the player or the card turned it on.
     return { enabled: manifest.stage === true, player: card.player, card: { name: card.name, imageUrl: '/api/dsh-tavern/card-image?path=' + encodeURIComponent(card.path) },
       background: background ? '/api/dsh-tavern/cast-asset?' + new URLSearchParams({ card: castAssets.keyOf(card.path), file: background.file }).toString() : '',
-      cast: await castView(sessionId, card.path, manifest), turns }
+      cast, turns, initialFigures }
   }
   // One line in its speaker's voice on the chosen channel; { skip } when voicing is off or narration is silent.
   async function speakLine(sessionId, { speaker, text, emotion, narration } = {}) {

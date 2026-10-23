@@ -35,9 +35,6 @@
 			return beats;
 		}
 
-		function tavernCastCharacter(cast, name) {
-			return (cast || []).find(function (item) { return item.name === name || (item.aliases || []).indexOf(name) >= 0; }) || null;
-		}
 		// The best image for a character in an emotion: that sprite, then calm, any sprite, the avatar.
 		function tavernCastImage(data, name, emotion, preferAvatar) {
 			const character = tavernCastCharacter(data.cast, name);
@@ -62,19 +59,15 @@
 			const h = React.createElement;
 			const data = props.data, beats = props.beats, index = props.index;
 			const beat = beats[index] || null;
-			const present = [], emotions = new Map();
-			for (let at = 0; at <= index && at < beats.length; at += 1) {
-				const item = beats[at];
-				if (item.kind !== "line" || item.speaker === data.player) continue;
-				if (present.indexOf(item.speaker) < 0) present.push(item.speaker);
-				emotions.set(item.speaker, item.emotion);
-			}
-			const shown = present.slice(-3);
+			const shown = foldCastStage(data.initialFigures || [], beats.slice(0, index + 1), data);
 			return h("div", { className: "dsh-tavern-stage-scene" + (props.fullscreen ? " is-fullscreen" : ""), onClick: props.onAdvance },
 				data.background ? h("div", { className: "dsh-tavern-stage-backdrop is-scene", style: { "--dsh-stage-backdrop": "url(\"" + data.background + "\")" } })
 					: h("div", { className: "dsh-tavern-stage-backdrop", style: data.card.imageUrl ? { "--dsh-stage-backdrop": "url(\"" + data.card.imageUrl + "\")" } : undefined }),
-				h("div", { className: "dsh-tavern-stage-figures" }, shown.map(function (name) {
-					return h(TavernStageFigure, { key: name, name: name, url: tavernCastImage(data, name, emotions.get(name)), speaking: beat && beat.speaker === name, dim: beat && beat.kind === "line" && beat.speaker !== name });
+				h("div", { className: "dsh-tavern-stage-figures" }, shown.map(function (figure) {
+					const name = figure.speaker;
+					const speaker = beat && tavernCastCharacter(data.cast, beat.speaker);
+					const speaking = beat && (speaker ? speaker.name : beat.speaker) === name;
+					return h(TavernStageFigure, { key: name, name: name, url: tavernCastImage(data, name, figure.emotion), speaking: speaking, dim: beat && beat.kind === "line" && !speaking });
 				})),
 				beat ? h("div", { className: "dsh-tavern-stage-textbox" },
 					beat.kind === "line" ? h("div", { className: "dsh-tavern-stage-name", style: { "--dsh-cast-hue": tavernCastHue(beat.speaker) } }, beat.speaker,
