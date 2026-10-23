@@ -38,7 +38,9 @@ export function apply(ctx) {
       if (names.includes('stage_update')) {
         if (names.length !== 1) throw Error('Director exposed other tools')
         requests.push({ sessionId: input.sessionId, tools: names, results: input.messages.filter(message => message.role === 'tool') })
-        block = { type: 'tool-call', id: 'direction-' + requests.length, name: 'stage_update', arguments: JSON.stringify({ figures: [{ speaker: requests.length === 1 ? 'Missing' : 'Native Nora', emotion: 'joy' }] }) }
+        const note = input.messages.flatMap(message => message.content || []).map(block => block.text || '').join('\\n').split('\\n').find(line => line.startsWith('{"window":'))
+        const { first, ...seal } = JSON.parse(note).window
+        block = { type: 'tool-call', id: 'direction-' + requests.length, name: 'stage_update', arguments: JSON.stringify({ ...seal, figures: [{ speaker: requests.length === 1 ? 'Missing' : 'Native Nora', emotion: 'joy' }] }) }
       }
       yield { type: 'block-start', index: 0, blockType: block.type }
       yield { type: 'block-end', index: 0, block }

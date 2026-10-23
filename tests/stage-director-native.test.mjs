@@ -12,7 +12,9 @@ test('native director restricts globals but exposes its local submit tool and re
     async *stream(input) {
       requests.push(input)
       assert.deepEqual(input.tools.map(tool => tool.name), ['stage_update'])
-      const block = { type: 'tool-call', id: 'direction-' + requests.length, name: 'stage_update', arguments: JSON.stringify({ music: requests.length === 1 ? 'Missing' : 'Theme' }) }
+      const note = input.messages.flatMap(message => message.content || []).map(block => block.text || '').join('\n').split('\n').find(line => line.startsWith('{"window":'))
+      const { first, ...seal } = JSON.parse(note).window
+      const block = { type: 'tool-call', id: 'direction-' + requests.length, name: 'stage_update', arguments: JSON.stringify({ ...seal, music: requests.length === 1 ? 'Missing' : 'Theme' }) }
       yield { type: 'block-start', index: 0, blockType: block.type }
       yield { type: 'block-end', index: 0, block }
       yield { type: 'finish', reason: { kind: 'tool-calls' } }
