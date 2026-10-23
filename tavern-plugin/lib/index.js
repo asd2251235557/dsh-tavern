@@ -177,6 +177,7 @@ import { createManualLedger } from './domain/manual-ledger.js'
 import { POSTURE_SUBMIT_TOOL } from './domain/posture-submission.js'
 import { createCastPresentation } from './domain/cast-presentation.js'
 import { createStageDirector, STAGE_UPDATE_TOOL } from './domain/stage-director.js'
+import { stagePages } from './domain/stage-performance.js'
 import { stageDirectorCommit } from './stage-director-commit.js'
 import { createCastAssets, CAST_AUDIO_TYPES } from './domain/cast-assets.js'
 import { createSpeech } from './domain/speech.js'
@@ -2176,7 +2177,8 @@ export async function apply(ctx) {
     const turns = []
     for (const turn of wanted) {
       const material = await pluginTurns.readTurn(str(sessionId), turn).catch(() => null) || (turn === wanted.at(-1) ? await pluginTurns.readPendingTurn(str(sessionId)).catch(() => null) : null)
-      if (material && material.turn === turn) turns.push({ turn, text: material.text, lines: annotated.turns[turn] || [] })
+      if (material && material.turn === turn) turns.push({ turn, key: material.key, text: material.text, lines: annotated.turns[turn] || [],
+        pages: stagePages(material.text, annotated.turns[turn] || []), performances: await stageDirector.performances(str(sessionId), turn, material.key) })
     }
     const manifest = await castAssets.read(card.path)
     const assets = await stageCatalog(str(sessionId))

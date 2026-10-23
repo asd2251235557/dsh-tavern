@@ -22,7 +22,7 @@ function png(r, g, b) {
 
 // A fixture invokes the real tool/transaction; its accepted record travels through
 // native save import. No model calls or test-only production RPC are needed.
-export async function stageStateChecks({ page, output, demo = false }) {
+export async function stageStateChecks({ page, output, demo = false, bodyText = '"Ready."', performances, inspect }) {
   await page.addInitScript(() => {
     window.stageTestAudio = []
     window.Audio = class extends window.Audio { constructor(...args) { super(...args); this.muted = true; window.stageTestAudio.push(this) } }
@@ -52,7 +52,7 @@ export async function stageStateChecks({ page, output, demo = false }) {
     { path: 'assets/background/hall.png', content: png(90, 70, 30) }, { path: 'assets/music/theme.wav', content: wav }])
   const imported = (await call('importCard', { payload: { kind: 'charx', name: 'stage-' + run + '.charx', fileB64: archive.toString('base64') } })).card
   await call('setCardStage', { path: imported.path, enabled: true })
-  const history = [{ user_name: 'Reader', character_name: name }, { name, is_user: false, mes: 'The curtain opens.' }, { name: 'Reader', is_user: true, mes: 'Begin.' }, { name, is_user: false, mes: '"Ready."' }].map(JSON.stringify).join('\n')
+  const history = [{ user_name: 'Reader', character_name: name }, { name, is_user: false, mes: 'The curtain opens.' }, { name: 'Reader', is_user: true, mes: 'Begin.' }, { name, is_user: false, mes: bodyText }].map(JSON.stringify).join('\n')
   const game = await call('importChatHistoryText', { cardPath: imported.path, text: history, fileName: 'stage.jsonl' })
   assert.ok(game.sessionId, JSON.stringify(game))
   const exported = await call('exportGameSave', { sessionId: game.sessionId, images: false })
@@ -62,7 +62,7 @@ export async function stageStateChecks({ page, output, demo = false }) {
   save.plugins = { data: { version: 1, owners: { [CAST_DATA_OWNER]: { game: null, turns: [{ turn, key: computeSceneTarget(save.chat, turn).key, data: annotation, bytes: JSON.stringify(annotation).length, updatedAt: 1 }] } } }, media: null, attachments: [] }
   const fixtureAssets = { player: 'Reader', cast: [{ name }], background: [{ name: 'main' }, { name: 'hall' }], music: [{ name: 'theme' }] }
   const fixture = await stageDirectorFixture(save.chat, fixtureAssets)
-  const submitted = { figures: [{ speaker: name, emotion: 'sadness' }], background: 'hall', music: 'theme' }
+  const submitted = { figures: [{ speaker: name, emotion: 'sadness' }], background: 'hall', music: 'theme', ...(performances ? { performances: performances(name) } : {}) }
   const directorRun = await runDirectorFixture(fixture, [{...submitted, music: 'Missing'}, submitted])
   assert.equal(directorRun.receipts[0].retryable, true)
   const accepted = directorRun.receipts.at(-1)
@@ -97,6 +97,7 @@ export async function stageStateChecks({ page, output, demo = false }) {
     assert.equal(before.music.name, 'theme')
     await page.waitForFunction(() => window.stageTestAudio.some(audio => audio.muted && audio.currentTime > 0))
   } else assert.equal(before.stage, undefined, 'The demo ignores accepted director records')
+  const performance = inspect ? await inspect({ page, stage, call, sessionId: restored.sessionId, name }) : null
   await call('appendStoryRounds', { sessionId: restored.sessionId, rounds: [{ user: 'Wait.', assistant: 'A quiet moment passes.' }] })
   await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'A quiet moment passes.' }).waitFor()
   const next = await snapshot('stage-next-turn')
@@ -104,7 +105,7 @@ export async function stageStateChecks({ page, output, demo = false }) {
   await stage.waitFor()
   await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'A quiet moment passes.' }).waitFor()
   const reloaded = await snapshot('stage-reloaded')
-  const result = { demo, submitted, accepted, directorRun, before, next, reloaded, carriesTurn: next.figures[0]?.name === name, carriesReload: reloaded.figures[0]?.name === name,
+  const result = { demo, performance, submitted, accepted, directorRun, before, next, reloaded, carriesTurn: next.figures[0]?.name === name, carriesReload: reloaded.figures[0]?.name === name,
     backgroundPreserved: before.background === next.background && before.background === reloaded.background }
   await writeFile(join(output, 'stage-state.json'), JSON.stringify(result, null, 2))
   assert.ok(result.carriesTurn, 'A narration-only next turn must retain the preceding figure')

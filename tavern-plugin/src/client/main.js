@@ -842,6 +842,7 @@ window.__ModuleLoader__.load({
 // @include features/cast-presentation.js
 
 // @include-domain cast-stage-state.js
+// @include-domain stage-performance-playback.js
 // @include features/cast-stage.js
 
 // @include ui/message-frame.js

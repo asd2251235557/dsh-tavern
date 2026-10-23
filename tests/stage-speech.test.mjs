@@ -22,7 +22,6 @@ test('全屏舞台：位置不变的新轮次和重新生成都朗读，普通�
         effects[index] = { deps, cleanup: fn() }
       }
     },
-    useTavernStageReader: () => reader,
     useTavernStageReading: () => ({ on: true }),
     tavernBeatSpeech: (sessionId, beat) => ({ sessionId, text: beat.text }),
     tavernSpeech: { speak: async input => { heard.push(input); return true } },
@@ -30,13 +29,15 @@ test('全屏舞台：位置不变的新轮次和重新生成都朗读，普通�
     window: { setTimeout, clearTimeout },
     TavernStageReadButton() {}, TavernStageSceneView() {}
   })
-  const draw = () => { cursor = 0; render({ sessionId: 'game', data: {} }) }
+  const draw = () => { cursor = 0; render({ sessionId: 'game', data: {}, reader }) }
   draw()
   draw()
   reader = { ...reader, turn: 2, beats: [{ text: '下一轮' }] }
   draw()
   reader = { ...reader, beats: [{ text: '重新生成' }] }
   draw()
+  draw()
+  reader = { ...reader, mode: 'skip', beats: [{ text: '跳过末页不重新朗读' }] }
   draw()
   await Promise.resolve()
   assert.deepEqual(heard.map(item => item.text), ['第一句', '下一轮', '重新生成'])
