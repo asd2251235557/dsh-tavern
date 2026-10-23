@@ -178,7 +178,7 @@ export function createBackgroundAgentTask(options) {
         }
       })
       childCtx.systemPrompt.suppressRuntimeContext()
-      childCtx.tools.restrict({ allow: isolated ? state.input.tools.map(tool => tool.name) : state.input.task === 'phone' ? [] : ['skill', 'tavern_read_skill_reference', 'web_search'] })
+      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'tavern_read_skill_reference', 'web_search'] })
       childCtx.on('system-prompt/assemble', async function (_assembly, _context, next) {
         const assembly = await next()
         if (!isolated) prependSystemInstruction(assembly, options.systemAppend?.())
