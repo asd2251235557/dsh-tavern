@@ -43,24 +43,35 @@
 
 ## 舞台 core（2/N）：独立后台导演
 
-- 生产者是独立后台导演：复用 BackgroundAgentRunner，以 `task: 'stage-director', persistent: false` 为每轮创建自己的 session，可与结算并行。不挂进 settlementItems，不继承结算历史、人物卡/世界书前缀或结算工具；模型选择沿用本局后台模型设置，不增加设置项。
-- 宿主正文完成后独立触发；重生成只在正文正式采用后触发。输入端口接收宿主投影的完整 round-body `{chatId,sessionId,turn,key,text}`，不从 UI 或台词标注构造正文。上下文只有导演规则、本轮正文、上一状态和已有素材名称。读取舞台不会触发模型。
+- 生产者是独立后台导演：复用 BackgroundAgentRunner，以 `task: 'stage-director', persistent: false` 为每个正文窗口创建自己的 session，可与结算并行。不挂进 settlementItems，不继承结算历史、人物卡/世界书前缀或结算工具；模型选择沿用本局后台模型设置，不增加设置项。
+- 宿主正文流或完成事件独立触发，流式范围见下文；重生成只在正文正式采用后触发。完整 round-body 为 `{chatId,sessionId,turn,key,text}`，不从 UI 或台词标注构造正文。导演规则固定，本次 prepared frame 的玩家输入、人物卡、世界书和状态参考冻结后传入；排除写作规则，不继承结算会话。读取舞台不会触发模型。
 - 本切片工具名 `stage_update`，整个增量在工具内一次校验；错误直接返回同一 session，模型可在已有 runner 的工具预算内修正，不重建修复会话。成功后结束，一次提交整批 delta。
-- 参数为 `{ figures?: [{speaker, emotion?, remove?}] | null, background?: string | null, music?: string | null }`。`figures` 是逐人物增量，不是名单替换；省略表情保持，新人物默认平静。人物用清单的完整名称，情绪沿用 ST 名称（入口也归一化中文）；背景/音乐用唯一名称。`null` 分别清人物、清背景、停乐；`{}` 保持所有状态。
+- 参数为 `{ sequence, through, done:true, figures?: [{speaker, emotion?, remove?}] | null, background?: string | null, music?: string | null }`。`figures` 是逐人物增量，不是名单替换；省略表情保持，新人物默认平静。人物用清单的完整名称，情绪沿用 ST 名称（入口也归一化中文）；背景/音乐用唯一名称。`null` 分别清人物、清背景、停乐；只交封口字段即保持所有状态。
 - 音乐使用既有 CCv3 `data.assets` 中 `type: "music"` 的条目（wav/mp3/ogg/m4a），复用 cast-assets 导入、导出和受限媒体路由，不接收任意 URL。播放仍由已有音乐播放器和玩家开关控制。
-- 所有字段先校验；任何一项非法则整批不写，工具返回可修复错误。接受时在既有 Chat Journal 串行边界核对 branchId/revision、当前轮与正文 key、任务存活，再把整批 delta 一次写入按轮数据 owner `dsh-tavern.stage`。不改正文、变量或剧情 revision。已接受的同一正文版本不重复提交；过期/取消返回不可重试结果。
+- 所有字段先校验；任何一项非法则整批不写，工具返回可修复错误。最终持久化时在既有 Chat Journal 串行边界核对 branchId/revision、当前轮与正文 key、任务存活，再把整批 delta 一次写入按轮数据 owner `dsh-tavern.stage`。不改正文、变量或剧情 revision。已接受的同一正文版本不重复提交；过期/取消返回不可重试结果。
 - `castStage` 删除过渡字段 `initialFigures`，返回 `stage: {figures, background, music}`（名称状态）及已解析的 `background` URL、`music: {name,url} | null`。现有会话/同源权限不变；插件只读舞台视图也包含这些字段。
-- 本步是一轮一笔增量，立即替换该轮整幅舞台。输入端口不依赖结算，后续可在同一独立任务边界接入正文增量；本步暂不实现 text-delta 首窗、封存前缀、逐拍演出、提交前预览或完整冻结世界书上下文。不是声称已有完整流式导演。
+- 一轮最终保存一笔合并增量；流式期间的临时投影不提前写入存档。持续场景变化仍按窗口立即应用，不是逐页持久状态时间线。
 - 旧台词标注只用于聊天/配音，不回填成导演数据；首次成功导演提交前舞台状态为空。历史读取只折叠当前正文版本匹配的记录，资源缺失只影响投影，不改记录。已删除 demo 的历史/本轮标注人物推导、第一背景自动选择，没有兼容分支。
 
 ## 舞台 core（3/N）：按页一次性演出
 
-- `stage_update` 新增可省略的 `performances` 数组（最多十二项）：`{at,op:'actor.act.play',actor,motion:'nod'|'jump'}` 或 `{at,op:'screen.play',effect:'shake-1'}`。`actor` 必须是本次人物增量应用后仍在场的完整名称；同页同一目标最多一个短动作，不同页可重复。任何无效项都在工具内拒绝整批，原 session 可修正。
-- 宿主用正文非空行建立稳定的 `pages`，`at` 从 1 开始；同一份编号正文用于导演和阅读器。台词标注只给页添加姓名/情绪，不改变地址。此切片没有像素分页或流式段落窗口。
+- `stage_update` 新增可省略的 `performances` 数组（每窗口最多十二项）：`{at,op:'actor.act.play',actor,motion:'nod'|'jump'}` 或 `{at,op:'screen.play',effect:'shake-1'}`。`actor` 必须是本次人物增量应用后仍在场的完整名称；同页同一目标最多一个短动作，不同页可重复。任何无效项都在工具内拒绝整批，原 session 可修正。
+- 宿主用正文非空行建立稳定的 `pages`，`at` 从 1 开始；同一份编号正文用于导演和阅读器。台词标注只给页添加姓名/情绪，不改变地址。这不是按屏幕尺寸计算的像素分页。
 - 接纳时一次保存 `{delta,performances}`，持久状态仍按 delta 跨轮折叠、显式清除；performances 只属于源正文的本轮对应页，不进入下一轮 baseline。`castStage.turns[]` 增加 `key`、`pages`、`performances`，读取不生成或写状态。
 - 玩家翻回本轮某页即开启新 visit，停留约一秒后播放该页一次；普通重绘/导演通知/侧栏与全屏切换不重播。连续翻页取消中间页，跳过直接到本轮末页并取消待播及当前短动作，目标页不补播或重新朗读；初次打开、刷新、重开不播放已有事件。新正文到来时，只允许当前尚停留页的事件播放，不补播离开的页。
 - 侧栏和全屏共享阅读位置与一个轻量播放 owner。Web Animations 的短动作完成即释放，不写持久 transform，不影响人物/背景/音乐状态。换页、换局、关闭时取消该 owner 的定时器及动画。
 - 最小范围是点头、轻跳和轻震屏；暂不移植演出风格条目、entry/turn/idle/exit 组合、关键帧、音效、跨轮历史导航、统一 runtime 和设置 UI。这些不以未使用的协议或兼容分支提前加入。
+
+## 舞台 core（4/N）：首窗、封口与冻结上下文
+
+- 只观察正在运行的正文 operation 的 text-delta，不把推理或工具参数当正文。首五个完整非空行启动第一窗；其余正文在宿主提交后合成余窗，不循环切窗。短正文只调一次，恰好五行不发空余窗。
+- 两窗共用冻结参考、素材清单、前序状态及模型选择；余窗只承接已接受的舞台状态。`sequence` 是窗口序号，`through` 是该窗最后的全局页号，`done:true` 封口当前窗口而非宣告全文结束。三项都必须原样提交；错误及回写已封口页的演出在原会话内修复，不会局部接受。
+- 首窗只作内存投影，`castStage` 立即显示；全文提交后核对封口文字、operation、剧情版本、正文 key、素材和前序状态，再经既有 Journal 写锁保存合并的 `{delta,performances,seals,presentationKey}`。转正保留阅读来源，不把首窗演出当新事件重播。失败、取消、换代或关闭时清掉临时投影，不留下半轮存档。
+- 含副作用宏、EJS、script/style 或未闭合标签的首窗保守等待宿主最终投影；没有 prepared frame、非流式正文及重生成采用后仍走完整正文窗口。暂不涵盖任意 HTML/模板流式投影、相关性召回、长期导演记忆、跨轮分页或统一演出 runtime。
+
+### 设计理由
+
+`sequence/through/done` 是模型提交与宿主窗口的明确对应关系，不靠模型文字或调用顺序猜测完成范围；页地址前缀一旦接受便不可回写，坏参数直接由工具指出并允许修正。临时投影不持久化，是因为前台正文尚可能取消、失败或改写：此时尚无可供存档绑定的正式正文版本，不能让半轮演出成为下一轮的权威状态。窗口之间冻结参考也避免并行结算改变本次导演的事实基础；这不代表已经测量真实模型审美、长清单效果或缓存命中率。
 
 ## 第三步：配音
 

@@ -187,8 +187,6 @@ try {
       prompt_order: [{ order: [{ identifier: 'main', enabled: true }] }]
     }))
     await mkdir(join(data, 'resources/cards'), { recursive: true })
-    // The stage plugin example: a director settlement task and a plugin stage view.
-    if (castScenario) await cp(join(source, 'examples/tavern-plugin-director'), join(data, 'plugins/tavern-plugin-director'), { recursive: true })
     // Deliberate continuous DOM updates: a real status card must receive new
     // variables even when it never reaches the frame's DOM-idle threshold.
     const status = '<div id="e2e-gold">金币：加载中</div><script>function refresh(){const v=getAllVariables();document.getElementById("e2e-gold").textContent="金币："+(v.stat_data?.gold??"未初始化")}refresh();setInterval(refresh,200)</script>'

@@ -26,16 +26,6 @@ function figurePng([r, g, b], width = 120, height = 200) {
 
 // The stage: right panel, character material, full-screen reader that can send the next input.
 export async function castStageChecks({ page, step, output, report }) {
-  await step('插件舞台：导演插件定下的地点和时间画在舞台上，可选回内置舞台', async () => {
-    await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
-    const choice = page.getByRole('combobox', { name: '舞台样式' })
-    assert.equal(await choice.inputValue(), 'tavern-plugin-director:scene', '装了插件舞台时默认用它')
-    await page.locator('.dsh-tavern-stage-section').getByText('酒馆大堂 · 夜晚', { exact: true }).waitFor()
-    await page.waitForTimeout(400)
-    await page.screenshot({ path: join(output, 'cast-stage-plugin.png') })
-    await choice.selectOption('dsh-tavern:builtin')
-    report.castStagePlugin = true
-  })
   await step('舞台：右侧小舞台按台词换人，导入立绘包后显示立绘', async () => {
     const scene = page.locator('.dsh-tavern-stage-section .dsh-tavern-stage-scene')
     await scene.waitFor()
