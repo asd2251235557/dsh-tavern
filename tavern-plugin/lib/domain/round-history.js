@@ -84,7 +84,7 @@ function commitOfRound(commits, assistant, userText) {
   return key ? commits[key] : null
 }
 
-export function createRoundHistory({ chats, sessions, scripts, timeline, queueSettlement, cancelSettlement, present, diagnostics, sessionPatch, repairNative }) {
+export function createRoundHistory({ chats, sessions, scripts, timeline, queueSettlement, bodyCommitted, cancelSettlement, present, diagnostics, sessionPatch, repairNative }) {
   const { read: readChat, forSession: chatForSession, readCard: readChatCard,
     readRevision: readChatRevision, write: writeChat, update: updateChat } = chats
   const { read: readScript, continuity: scriptContinuity } = scripts
@@ -320,6 +320,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       throw error
     }
     committedChat = await regenerationRecovery.complete({ chatId: chat.id, session, operationId }) || committedChat
+    bodyCommitted?.(committedChat.sessionId)
     let settledChat = committedChat
     try {
       await queueSettlement(committedChat.id)
@@ -504,6 +505,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       throw error
     }
     committedChat = await completeRecent(committedChat, session, operationId)
+    bodyCommitted?.(committedChat.sessionId)
     let settledChat = committedChat
     try {
       await queueSettlement(committedChat.id)

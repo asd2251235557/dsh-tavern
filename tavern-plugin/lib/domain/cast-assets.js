@@ -11,6 +11,7 @@ const MAX_EXTRA_BYTES = 20 * 1024 * 1024
 const MAX_CHARACTERS = 64
 const MAX_NAME = 24
 const IMAGE_TYPES = Object.freeze({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' })
+export const CAST_AUDIO_TYPES = Object.freeze({ mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4' })
 
 function invalid(message) { return Object.assign(new Error(message), { code: 'TAVERN_CAST_INVALID' }) }
 
@@ -289,12 +290,14 @@ export function createCastAssets({ store }) {
     return await store.readBytes(dirOf(cardPath) + '/files/' + file) || undefined
   }
 
-  /** One stored image by the card's key (see keyOf), as the asset route serves it. */
-  async function readImage(key, file) {
-    if (!/^[0-9a-f]{64}$/.test(String(key)) || !/^[0-9a-f]{32}\.(png|jpg|webp|gif)$/.test(String(file))) return undefined
+  /** Stored inert image/audio only; unknown or executable formats are never served. */
+  async function readMedia(key, file) {
+    if (!/^[0-9a-f]{64}$/.test(String(key)) || !/^[0-9a-f]{32}\.[a-z0-9]{1,10}$/.test(String(file))) return undefined
+    const ext = file.split('.').pop(), mediaType = IMAGE_TYPES[ext] || CAST_AUDIO_TYPES[ext]
+    if (!mediaType) return undefined
     const bytes = await store.readBytes('cast-assets/' + key + '/files/' + file)
-    return bytes ? { bytes, mediaType: IMAGE_TYPES[file.split('.').pop()] } : undefined
+    return bytes ? { bytes, mediaType } : undefined
   }
 
-  return Object.freeze({ read, movePath, setImage, removeImage, setCharacter, setVoice, removeCharacter, importSpritePack, importCardAssets, bindPacks, setPlugins, setStage, setStartDefaults, setSource, readFile, readImage, keyOf: cardPath => hash(String(cardPath)) })
+  return Object.freeze({ read, movePath, setImage, removeImage, setCharacter, setVoice, removeCharacter, importSpritePack, importCardAssets, bindPacks, setPlugins, setStage, setStartDefaults, setSource, readFile, readMedia, keyOf: cardPath => hash(String(cardPath)) })
 }

@@ -330,7 +330,7 @@ ctx.tavernUi.registerTurnView({
 
 ## `getStage(gameId, { count? })`、`watchStage(gameId, listener)`（第 2 版）
 
-舞台要显示的东西：`{ enabled, player, card, background, characters, turns }`。`background` 是人物卡带的主背景图地址，没有时为空字符串。`turns` 是最近 `count` 轮（默认 5，最多 10）的 `{ turn, text, lines }`，`text` 是去掉 HTML 块的正文，`lines` 同宿主侧 `getCast`；`characters` 同宿主侧 `getCastAssets`；`enabled` 是玩家是否打开了「对话头像」。`watchStage` 先回调一次，之后在新的一轮、新的标注、素材变化后再回调，只在这一局在当前页面打开时有效。
+舞台要显示的东西：`{ enabled, player, card, background, music, stage, characters, turns }`。`stage` 是导演持续状态 `{ figures: [{ speaker, emotion }], background: string | null, music: string | null }`，背景和音乐的状态值是素材名称，省略增量保持原状，明确清空才消失。外层 `background` 是导演选定背景的已解析地址，未选择或缺失时为空字符串；外层 `music` 是 `{ name, url } | null`，只读投影，不授予写入或自动播放权限。`turns` 是最近 `count` 轮（默认 5，最多 10）的 `{ turn, text, lines }`，`text` 是去掉 HTML 块的正文，`lines` 同宿主侧 `getCast`；`characters` 同宿主侧 `getCastAssets`；`enabled` 是人物卡的舞台开关。`watchStage` 先回调一次，之后在新的一轮、新的标注、导演提交、素材变化后再回调，只在这一局在当前页面打开时有效。人物/表情、背景、音乐来自已接受的导演事务；台词标注不再推导舞台状态。
 
 ## `registerStageView({ id, label, render })`（第 2 版）
 

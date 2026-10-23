@@ -2,22 +2,24 @@ function tavernCastCharacter(cast, name) {
   return (cast || []).find(item => item.name === name || (item.aliases || []).includes(name)) || null
 }
 
-// A read-only projection of dialogue annotations, not another saved timeline.
-// Silence keeps the cast; a fourth entrant replaces the oldest visible figure.
-function foldCastStage(figures, lines, { player, cast = [] } = {}) {
-  const result = figures.map(figure => ({ ...figure }))
-  for (const line of lines) {
-    if (!line.speaker || line.speaker === player) continue
-    const character = tavernCastCharacter(cast, line.speaker)
-    const speaker = character ? character.name : line.speaker
-    const figure = result.find(item => item.speaker === speaker)
-    if (figure) figure.emotion = line.emotion
-    else {
-      result.push({ speaker, emotion: line.emotion })
-      if (result.length > 3) result.shift()
-    }
-  }
-  return result
+// Accepted director deltas are the only stage-state input. Reading never resets it.
+function emptyStageState() {
+  return { figures: [], background: null, music: null }
 }
 
-export { foldCastStage }
+function foldStageState(state, delta) {
+  const next = { ...state, figures: state.figures.map(figure => ({ ...figure })) }
+  if (delta.figures === null) next.figures = []
+  else for (const change of delta.figures || []) {
+    const index = next.figures.findIndex(figure => figure.speaker === change.speaker)
+    if (change.remove) {
+      if (index >= 0) next.figures.splice(index, 1)
+    } else if (index >= 0) {
+      if (change.emotion !== undefined) next.figures[index].emotion = change.emotion
+    } else next.figures.push({ speaker: change.speaker, emotion: change.emotion ?? 'neutral' })
+  }
+  for (const field of ['background', 'music']) if (Object.hasOwn(delta, field)) next[field] = delta[field]
+  return next
+}
+
+export { tavernCastCharacter, emptyStageState, foldStageState }

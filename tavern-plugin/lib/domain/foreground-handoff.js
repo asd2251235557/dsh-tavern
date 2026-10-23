@@ -70,6 +70,8 @@ export function createForegroundHandoff(options = {}) {
         // 正文重生成会先产生一个临时 DSH 回合，再把它合并为原楼层的新 Swipe。
         // 临时回合不能启动变量结算，否则可能把尚未采用的正文写进正式状态。
         if (chat.regenInProgress === true) return
+        // Independent session: start from the host's committed body, never await settlement.
+        options.directRound?.(input.sessionId)
         const activity = tasks.activity(chat)
         if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
           await queueBackground(chat.id)

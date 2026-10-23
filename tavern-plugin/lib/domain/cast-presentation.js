@@ -1,4 +1,3 @@
-import { foldCastStage } from './cast-stage-state.js'
 import { CAST_DATA_OWNER, CAST_SUBMIT_TOOL, CAST_SUBMIT_TOOL_NAME, castSettlementText, dialogueQuotes, normalizeCastSubmission, recentSpeakers } from './cast-annotation.js'
 
 /**
@@ -72,21 +71,5 @@ export function createCastPresentation({ enabled, turns, data, publish = () => {
     return Array.isArray(lines) && lines.length ? { turn, textVersion: key, lines: structuredClone(lines) } : null
   }
 
-  /** Cast entering a turn, from only the text versions still on this game's timeline. */
-  async function beforeTurn(sessionId, turn, options) {
-    if (!(turn > 1) || await enabled(sessionId) !== true) return []
-    const game = await turns.resolveGame(sessionId)
-    if (!game) return []
-    const all = await records(game.chatId, turn - 1)
-    const keys = await turns.currentKeys(game.sessionId, [...new Set(all.map(record => record.turn))])
-    let figures = []
-    for (const record of all.reverse()) {
-      if (record.key === keys.get(record.turn) && Array.isArray(record.data?.lines)) {
-        figures = foldCastStage(figures, record.data.lines, options)
-      }
-    }
-    return figures
-  }
-
-  return Object.freeze({ settlement, forTurns, annotation, beforeTurn })
+  return Object.freeze({ settlement, forTurns, annotation })
 }

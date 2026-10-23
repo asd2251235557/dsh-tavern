@@ -75,7 +75,7 @@ async function fixture(t, bounded) {
   const calls = [], hooks = {}
   const history = createBoundedHistory({ links: async () => ({ session: 'chat' }), readWindow: p.readWindow, pageSize: 8 })
   const dispatched = []
-  const presented = []
+  const presented = [], directed = []
   const rounds = createRoundHistory({
     chats: { read: async id => { calls.push('read'); return p.read(id) }, forSession: async () => { calls.push('read'); return p.read('chat') },
       readState: async id => (await p.readSlice(id, [], ['id', 'sessionId', 'regenInProgress'])).chat,
@@ -89,10 +89,11 @@ async function fixture(t, bounded) {
       } : {}) },
     sessions: { get: () => agent, flush: async () => {} }, timeline,
     scripts: { read: async () => ({ chunks: [] }), continuity: { transition: () => ({ state: {} }) }, dispatchEvent: async event => { dispatched.push({ name: event.name, args: event.args, chat: Boolean(event.chat), recent: event.recent === true }) } },
-    queueSettlement: async () => {}, cancelSettlement: async () => {},
+    bodyCommitted: sessionId => directed.push('director:' + sessionId),
+    queueSettlement: async () => { directed.push('settlement') }, cancelSettlement: async () => {},
     present: async value => { presented.push(isScopedMessages(value.messages) ? 'window' : 'full'); return { rolled: true } }
   })
-  return { p, rounds, calls, session, dispatched, presented, hooks }
+  return { p, rounds, calls, session, dispatched, presented, hooks, directed }
 }
 
 function comparable(chat) {
@@ -158,6 +159,7 @@ test('bounded regeneration stores the same Chat and surface as the complete rege
     const h = await fixture(t, bounded)
     const before = await h.p.read('chat')
     const view = await h.rounds.regenerate('chat', '更紧张一些', 'session')
+    assert.deepEqual(h.directed, ['director:session', 'settlement'], 'only the adopted regenerated body starts direction, before settlement')
     const after = await h.p.read('chat')
     results.push({ h, before, after, view })
   }

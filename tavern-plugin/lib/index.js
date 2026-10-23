@@ -176,7 +176,9 @@ import { LEDGER_SUBMIT_TOOL } from './domain/story-ledger.js'
 import { createManualLedger } from './domain/manual-ledger.js'
 import { POSTURE_SUBMIT_TOOL } from './domain/posture-submission.js'
 import { createCastPresentation } from './domain/cast-presentation.js'
-import { createCastAssets } from './domain/cast-assets.js'
+import { createStageDirector, STAGE_UPDATE_TOOL } from './domain/stage-director.js'
+import { stageDirectorCommit } from './stage-director-commit.js'
+import { createCastAssets, CAST_AUDIO_TYPES } from './domain/cast-assets.js'
 import { createSpeech } from './domain/speech.js'
 import { createAssetPacks } from './domain/asset-packs.js'
 import { createUploads } from './domain/uploads.js'
@@ -2112,7 +2114,25 @@ export async function apply(ctx) {
       pluginApi.castAnnotated(sessionId, annotation)
     }
   })
-  // Work riding on the main settlement call: Tavern's own items first, then plugins.
+  async function stageCatalog(sessionId) {
+    const card = await castCardOf(sessionId), manifest = await castAssets.read(card.path)
+    const url = file => '/api/dsh-tavern/cast-asset?' + new URLSearchParams({ card: castAssets.keyOf(card.path), file }).toString()
+    return { player: card.player, cast: await castView(sessionId, card.path, manifest),
+      background: (manifest.backgrounds || []).map(item => ({ name: item.name, url: url(item.file) })),
+      music: (manifest.extras || []).filter(item => item.type === 'music' && Object.hasOwn(CAST_AUDIO_TYPES, item.ext)).map(item => ({ name: item.name, url: url(item.file) })) }
+  }
+  const stageDirector = createStageDirector({ enabled: cardStageOn, turns: pluginTurns, data: pluginData, catalog: stageCatalog,
+    binding: async sessionId => (await chatHeaderForSession(sessionId, ['timeline']))?.timeline,
+    commit: stageDirectorCommit(chatPersistence),
+    selection: async sessionId => backgroundModelSelection(await backgroundConfigForSession(sessionId)),
+    runAgent: input => backgroundAgentRunner.run(input),
+    publish: sessionId => sessionSignals.publish(sessionId, { kind: 'cast', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) }) })
+  const directorJobs = createSettlementJobs({ run: async (sessionId, signal) => stageDirector.run(await pluginTurns.readPendingTurn(sessionId), signal), onSettled: () => {} })
+  function directRound(sessionId) {
+    void directorJobs.cancel(sessionId, { wait: false }).then(() => directorJobs.start(sessionId))
+      .catch(error => console.warn('dsh-tavern: 舞台导演任务失败', str(error?.message || error)))
+  }
+  ctx.effect(() => () => directorJobs.dispose())
   const settlementItems = createSettlementItems({ items: () => [castPresentation.settlement], plugins: () => pluginApi.settlement })
   const postureItem = createPostureItem({ prompt: () => runtimePrompt('posture-settlement'), tool: POSTURE_SUBMIT_TOOL })
   function castAssetView(cardPath, manifest) {
@@ -2159,13 +2179,13 @@ export async function apply(ctx) {
       if (material && material.turn === turn) turns.push({ turn, text: material.text, lines: annotated.turns[turn] || [] })
     }
     const manifest = await castAssets.read(card.path)
-    const background = (manifest.backgrounds || [])[0]
-    const cast = await castView(sessionId, card.path, manifest)
-    const initialFigures = await castPresentation.beforeTurn(str(sessionId), turns.at(-1)?.turn, { player: card.player, cast })
+    const assets = await stageCatalog(str(sessionId))
+    const stage = await stageDirector.state(str(sessionId), turns.at(-1)?.turn)
     // The stage is the card's choice: off for ordinary cards, on when the player or the card turned it on.
     return { enabled: manifest.stage === true, player: card.player, card: { name: card.name, imageUrl: '/api/dsh-tavern/card-image?path=' + encodeURIComponent(card.path) },
-      background: background ? '/api/dsh-tavern/cast-asset?' + new URLSearchParams({ card: castAssets.keyOf(card.path), file: background.file }).toString() : '',
-      cast, turns, initialFigures }
+      background: assets.background.find(item => item.name === stage.background)?.url || '',
+      music: assets.music.find(item => item.name === stage.music) || null,
+      cast: assets.cast, turns, stage }
   }
   // One line in its speaker's voice on the chosen channel; { skip } when voicing is off or narration is silent.
   async function speakLine(sessionId, { speaker, text, emotion, narration } = {}) {
@@ -2259,7 +2279,7 @@ export async function apply(ctx) {
     settingsChanged: (gameId, plugin) => sessionSignals.publish(gameId, { kind: 'plugin-settings', version: plugin + ':' + Date.now() + ':' + Math.random().toString(36).slice(2) }),
     // A plugin published new state for its page side (tavernUi.watchState re-reads it).
     publishState: (gameId, plugin, name) => sessionSignals.publish(gameId, { kind: 'plugin-state:' + plugin + ':' + name, version: Date.now() + ':' + Math.random().toString(36).slice(2) }),
-    reservedToolNames: [...BACKGROUND_TOOLS, HISTORY_RECALL_TOOL].map(tool => tool?.name).concat([STORY_SUBMIT_TOOL_NAME, 'character_design_finish', 'worldbook_search', 'web_search', 'skill']).filter(Boolean),
+    reservedToolNames: [...BACKGROUND_TOOLS, HISTORY_RECALL_TOOL].map(tool => tool?.name).concat([STORY_SUBMIT_TOOL_NAME, STAGE_UPDATE_TOOL.name, 'character_design_finish', 'worldbook_search', 'web_search', 'skill']).filter(Boolean),
     media: pluginMedia,
     data: pluginData,
     pluginData: pluginDataStore,
@@ -2893,6 +2913,7 @@ export async function apply(ctx) {
     store: { chatForSession, readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, openingStateForSession },
     tasks: backgroundTasks,
     queueBackground: queueSettlement,
+    directRound,
     waitBackground: chatId => Promise.all([settlementJobs.pending(chatId), settlementRun.pluginTaskJob(chatId)]),
     prefilterWorldbook: chatId => worldbookPrefilter.start(chatId),
     cancelPrefilter: chatId => worldbookPrefilter.cancel(chatId),
@@ -3007,6 +3028,7 @@ export async function apply(ctx) {
       dispatchEvent: function (event) { return tavernScriptHostAdapter.dispatchEvent(event) } },
     timeline: storyTimeline,
     queueSettlement,
+    bodyCommitted: directRound,
     cancelSettlement,
     present: presentStory,
     sessionPatch,

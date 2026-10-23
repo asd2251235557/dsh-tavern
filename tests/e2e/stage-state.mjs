@@ -7,6 +7,8 @@ import { writeZipEntries } from '../../tavern-plugin/lib/domain/zip-entries.js'
 import { buildGameSave, readGameSave } from '../../tavern-plugin/lib/domain/game-save.js'
 import { computeSceneTarget } from '../../tavern-plugin/lib/domain/scene-illustration.js'
 import { CAST_DATA_OWNER } from '../../tavern-plugin/lib/domain/cast-annotation.js'
+import { stageDirectorFixture, runDirectorFixture } from '../helpers/stage-director-fixture.mjs'
+import { STAGE_DATA_OWNER } from '../../tavern-plugin/lib/domain/stage-director.js'
 
 function png(r, g, b) {
   const chunk = (type, data) => {
@@ -18,9 +20,15 @@ function png(r, g, b) {
   return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.from([0, r, g, b, 255]))), chunk('IEND', Buffer.alloc(0))])
 }
 
-// A real host/browser probe. Only the saved annotation is synthetic; import, native
-// rounds, cast assets, RPC, rendering and reload all use the application's paths.
-export async function stageStateChecks({ page, output }) {
+// A fixture invokes the real tool/transaction; its accepted record travels through
+// native save import. No model calls or test-only production RPC are needed.
+export async function stageStateChecks({ page, output, demo = false }) {
+  await page.addInitScript(() => {
+    window.stageTestAudio = []
+    window.Audio = class extends window.Audio { constructor(...args) { super(...args); this.muted = true; window.stageTestAudio.push(this) } }
+  })
+  const proceed = page.getByRole('button', { name: 'Continue', exact: true })
+  if (await proceed.isVisible()) await proceed.click()
   const call = (method, args = {}) => page.evaluate(async ([method, args]) => {
     const result = await (await fetch('/api/dsh-tavern/' + method, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args) })).json()
     if (result.ok === false) throw Error(method + ': ' + JSON.stringify(result))
@@ -30,9 +38,18 @@ export async function stageStateChecks({ page, output }) {
   const name = 'Stage ' + run
   const card = { spec: 'chara_card_v3', spec_version: '3.0', data: { name, description: 'Original synthetic fixture.', first_mes: 'The curtain opens.', extensions: {}, assets: [
     { type: 'emotion', name: 'joy', uri: 'embeded://assets/emotion/joy.png', ext: 'png' },
-    { type: 'background', name: 'main', uri: 'embeded://assets/background/room.png', ext: 'png' }
+    { type: 'emotion', name: 'sadness', uri: 'embeded://assets/emotion/sadness.png', ext: 'png' },
+    { type: 'background', name: 'main', uri: 'embeded://assets/background/room.png', ext: 'png' },
+    { type: 'background', name: 'hall', uri: 'embeded://assets/background/hall.png', ext: 'png' },
+    { type: 'music', name: 'theme', uri: 'embeded://assets/music/theme.wav', ext: 'wav' }
   ] } }
-  const archive = writeZipEntries([{ path: 'card.json', content: JSON.stringify(card) }, { path: 'assets/emotion/joy.png', content: png(210, 90, 40) }, { path: 'assets/background/room.png', content: png(30, 70, 90) }])
+  const wav = Buffer.alloc(16044)
+  wav.write('RIFF'); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16)
+  wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28)
+  wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(16000, 40)
+  const archive = writeZipEntries([{ path: 'card.json', content: JSON.stringify(card) }, { path: 'assets/emotion/joy.png', content: png(210, 90, 40) },
+    { path: 'assets/emotion/sadness.png', content: png(40, 80, 200) }, { path: 'assets/background/room.png', content: png(30, 70, 90) },
+    { path: 'assets/background/hall.png', content: png(90, 70, 30) }, { path: 'assets/music/theme.wav', content: wav }])
   const imported = (await call('importCard', { payload: { kind: 'charx', name: 'stage-' + run + '.charx', fileB64: archive.toString('base64') } })).card
   await call('setCardStage', { path: imported.path, enabled: true })
   const history = [{ user_name: 'Reader', character_name: name }, { name, is_user: false, mes: 'The curtain opens.' }, { name: 'Reader', is_user: true, mes: 'Begin.' }, { name, is_user: false, mes: '"Ready."' }].map(JSON.stringify).join('\n')
@@ -43,13 +60,23 @@ export async function stageStateChecks({ page, output }) {
   const turn = Math.max(...save.chat.messages.filter(m => m.role === 'assistant').map(m => m.turn || 1))
   const annotation = { version: 1, lines: [{ n: 1, quote: 'Ready.', speaker: name, emotion: 'joy' }] }
   save.plugins = { data: { version: 1, owners: { [CAST_DATA_OWNER]: { game: null, turns: [{ turn, key: computeSceneTarget(save.chat, turn).key, data: annotation, bytes: JSON.stringify(annotation).length, updatedAt: 1 }] } } }, media: null, attachments: [] }
+  const fixtureAssets = { player: 'Reader', cast: [{ name }], background: [{ name: 'main' }, { name: 'hall' }], music: [{ name: 'theme' }] }
+  const fixture = await stageDirectorFixture(save.chat, fixtureAssets)
+  const submitted = { figures: [{ speaker: name, emotion: 'sadness' }], background: 'hall', music: 'theme' }
+  const directorRun = await runDirectorFixture(fixture, [{...submitted, music: 'Missing'}, submitted])
+  assert.equal(directorRun.receipts[0].retryable, true)
+  const accepted = directorRun.receipts.at(-1)
+  assert.deepEqual(accepted, { ok: true })
+  Object.assign(save.plugins.data.owners, (await fixture.data.snapshot(save.chat.id)).owners)
   const restored = await call('importGameSave', { fileB64: buildGameSave({ ...save, tavernVersion: save.manifest.tavernVersion, exportedAt: Date.now() }).toString('base64') })
   await call('setCardStage', { path: restored.cardPath, enabled: true })
   await call('castSetImage', { sessionId: restored.sessionId, name, slot: 'joy', data: png(210, 90, 40).toString('base64') })
   const title = 'Stage continuity restored ' + Date.now()
   await call('renameConversation', { sessionId: restored.sessionId, title })
   await page.reload()
-  await page.getByText(name, { exact: true }).first().click()
+  const group = page.locator('.dsh-tavern-history-group-toggle').filter({ hasText: name })
+  await group.waitFor()
+  if (await group.getAttribute('aria-expanded') === 'false') await group.click()
   await page.getByText(title, { exact: true }).first().click()
   const stage = page.locator('.dsh-tavern-stage-section').filter({ visible: true })
   await stage.waitFor()
@@ -59,11 +86,17 @@ export async function stageStateChecks({ page, output }) {
     const figures = await stage.locator('.dsh-tavern-stage-figure').evaluateAll(nodes => nodes.map(node => ({ name: node.dataset.speaker, image: node.querySelector('img')?.getAttribute('src') || '' })))
     const background = await stage.locator('.dsh-tavern-stage-backdrop').getAttribute('style')
     await page.screenshot({ path: join(output, label + '.png') })
-    return { figures, background, turn: rpc.turns.at(-1)?.turn, cast: rpc.cast, initialFigures: rpc.initialFigures }
+    return { figures, background, turn: rpc.turns.at(-1)?.turn, cast: rpc.cast, stage: rpc.stage, music: rpc.music }
   }
   const before = await snapshot('stage-before')
   assert.equal(before.figures.length, 1)
   assert.ok(before.figures[0].image, 'The fixture must show a real imported sprite')
+  assert.equal(before.figures[0].image, before.cast.find(item => item.name === name).sprites[demo ? 'joy' : 'sadness'])
+  if (!demo) {
+    assert.equal(before.stage.background, 'hall')
+    assert.equal(before.music.name, 'theme')
+    await page.waitForFunction(() => window.stageTestAudio.some(audio => audio.muted && audio.currentTime > 0))
+  } else assert.equal(before.stage, undefined, 'The demo ignores accepted director records')
   await call('appendStoryRounds', { sessionId: restored.sessionId, rounds: [{ user: 'Wait.', assistant: 'A quiet moment passes.' }] })
   await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'A quiet moment passes.' }).waitFor()
   const next = await snapshot('stage-next-turn')
@@ -71,7 +104,7 @@ export async function stageStateChecks({ page, output }) {
   await stage.waitFor()
   await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'A quiet moment passes.' }).waitFor()
   const reloaded = await snapshot('stage-reloaded')
-  const result = { before, next, reloaded, carriesTurn: next.figures[0]?.name === name, carriesReload: reloaded.figures[0]?.name === name,
+  const result = { demo, submitted, accepted, directorRun, before, next, reloaded, carriesTurn: next.figures[0]?.name === name, carriesReload: reloaded.figures[0]?.name === name,
     backgroundPreserved: before.background === next.background && before.background === reloaded.background }
   await writeFile(join(output, 'stage-state.json'), JSON.stringify(result, null, 2))
   assert.ok(result.carriesTurn, 'A narration-only next turn must retain the preceding figure')
@@ -81,7 +114,7 @@ export async function stageStateChecks({ page, output }) {
   await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'Quiet interval 5.' }).waitFor()
   result.longSilence = await snapshot('stage-long-silence')
   assert.deepEqual(result.longSilence.figures, before.figures, 'The cast must not depend on the recent-turn window')
-  assert.deepEqual(result.longSilence.initialFigures, [{ speaker: name, emotion: 'joy' }], 'count=1 still receives the full historical seed')
+  if (!demo) assert.deepEqual(result.longSilence.stage, before.stage, 'count=1 still receives the full historical state')
   await stage.getByRole('button', { name: '全屏舞台', exact: true }).click()
   const fullscreen = page.locator('.dsh-tavern-stage-overlay')
   await fullscreen.locator('.dsh-tavern-stage-figure img').waitFor()
@@ -89,6 +122,32 @@ export async function stageStateChecks({ page, output }) {
   await page.screenshot({ path: join(output, 'stage-fullscreen.png') })
   await page.keyboard.press('Escape')
   result.fullscreen = true
+  if (!demo) {
+    const finalSave = readGameSave(Buffer.from((await call('exportGameSave', { sessionId: restored.sessionId, images: false })).base64, 'base64'))
+    const clearFixture = await stageDirectorFixture(finalSave.chat, fixtureAssets)
+    const clearRun = await runDirectorFixture(clearFixture, [{ figures: null, background: null, music: null }])
+    assert.deepEqual(clearRun.receipts, [{ ok: true }])
+    const owner = STAGE_DATA_OWNER
+    finalSave.plugins.data.owners[owner].turns.push(...(await clearFixture.data.snapshot(finalSave.chat.id)).owners[owner].turns)
+    const cleared = await call('importGameSave', { fileB64: buildGameSave({ ...finalSave, tavernVersion: finalSave.manifest.tavernVersion, exportedAt: Date.now() }).toString('base64') })
+    const clearTitle = 'Explicit stage clear ' + Date.now()
+    await call('setCardStage', { path: cleared.cardPath, enabled: true })
+    await call('renameConversation', { sessionId: cleared.sessionId, title: clearTitle })
+    await page.reload()
+    await group.waitFor()
+    if (await group.getAttribute('aria-expanded') === 'false') await group.click()
+    await page.getByText(clearTitle, { exact: true }).first().click()
+    await stage.waitFor()
+    await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'Quiet interval 5.' }).waitFor()
+    const clearedState = await call('castStage', { sessionId: cleared.sessionId, count: 1 })
+    assert.deepEqual(clearedState.stage, { figures: [], background: null, music: null })
+    assert.equal(await stage.locator('.dsh-tavern-stage-figure').count(), 0)
+    assert.equal(await stage.locator('.dsh-tavern-stage-backdrop.is-scene').count(), 0)
+    assert.equal(clearedState.music, null)
+    assert.equal(await stage.getByRole('button', { name: /关闭音乐|打开音乐/ }).count(), 0)
+    result.explicitClear = true
+    await page.screenshot({ path: join(output, 'stage-explicit-clear.png') })
+  }
   await writeFile(join(output, 'stage-state.json'), JSON.stringify(result, null, 2))
   return result
 }
@@ -107,7 +166,13 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const pages = browser.contexts().flatMap(context => context.pages()).filter(page => /^(https?:|dsh-app:)/.test(page.url()))
     assert.equal(pages.length, 1, 'Use a disposable browser with exactly one Tavern page')
     pages[0].setDefaultTimeout(20000)
-    const result = await stageStateChecks({ page: pages[0], output: directory })
-    console.log(JSON.stringify({ carriesTurn: result.carriesTurn, carriesReload: result.carriesReload, backgroundPreserved: result.backgroundPreserved, fullscreen: result.fullscreen }))
+    try {
+      const result = await stageStateChecks({ page: pages[0], output: directory, demo: process.argv.includes('--demo') })
+      console.log(JSON.stringify({ carriesTurn: result.carriesTurn, carriesReload: result.carriesReload, backgroundPreserved: result.backgroundPreserved, fullscreen: result.fullscreen, explicitClear: result.explicitClear }))
+    } catch (error) {
+      await writeFile(join(directory, 'failure.txt'), error.message + '\n' + await pages[0].locator('body').innerText())
+      await pages[0].screenshot({ path: join(directory, 'failure.png') })
+      throw error
+    }
   } finally { await browser.close() }
 }

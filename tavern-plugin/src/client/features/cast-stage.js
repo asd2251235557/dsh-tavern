@@ -17,11 +17,11 @@
 			const refresh = React.useCallback(function () { setVersion(function (value) { return value + 1; }); }, []);
 			React.useEffect(function () {
 				let active = true;
-				rpc("castStage", { count: 5 }, sessionId).then(function (data) { if (active) setState({ data: data, error: "" }); },
-					function (error) { if (active) setState(function (current) { return { data: current.data, error: String(error.message || error) }; }); });
+				rpc("castStage", { count: 5 }, sessionId).then(function (data) { if (active) setState({ sessionId: sessionId, data: data, error: "" }); },
+					function (error) { if (active) setState(function (current) { return { sessionId: sessionId, data: current.sessionId === sessionId ? current.data : null, error: String(error.message || error) }; }); });
 				return function () { active = false; };
 			}, [sessionId, turnKey, version]);
-			return Object.assign({}, state, { refresh: refresh, setData: function (data) { setState({ data: data, error: "" }); } });
+			return Object.assign({}, state.sessionId === sessionId ? state : { data: null, error: "" }, { refresh: refresh, setData: function (data) { setState({ sessionId: sessionId, data: data, error: "" }); } });
 		}
 
 		/** A turn as reading beats: narration paragraphs and annotated lines, in order. */
@@ -59,7 +59,7 @@
 			const h = React.createElement;
 			const data = props.data, beats = props.beats, index = props.index;
 			const beat = beats[index] || null;
-			const shown = foldCastStage(data.initialFigures || [], beats.slice(0, index + 1), data);
+			const shown = data.stage.figures;
 			return h("div", { className: "dsh-tavern-stage-scene" + (props.fullscreen ? " is-fullscreen" : ""), onClick: props.onAdvance },
 				data.background ? h("div", { className: "dsh-tavern-stage-backdrop is-scene", style: { "--dsh-stage-backdrop": "url(\"" + data.background + "\")" } })
 					: h("div", { className: "dsh-tavern-stage-backdrop", style: data.card.imageUrl ? { "--dsh-stage-backdrop": "url(\"" + data.card.imageUrl + "\")" } : undefined }),
@@ -79,7 +79,7 @@
 
 		/** The stage data as plugins see it (tavernUi.getStage). */
 		function tavernStagePublicData(data) {
-			return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", characters: data.cast || [], turns: data.turns || [] };
+			return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", music: data.music, stage: data.stage, characters: data.cast || [], turns: data.turns || [] };
 		}
 
 		// The look of the stage: Tavern's own, or a plugin's registerStageView; remembered per browser.
@@ -285,7 +285,10 @@
 			React.useEffect(function () {
 				if (shown && reading.on && beat && !fullscreen) void tavernSpeech.speak(tavernBeatSpeech(props.sessionId, beat));
 			}, [reader.index, reader.turn, reader.beats, reading.on, fullscreen, shown, props.sessionId]);
-			// Music belongs to this game's stage: leaving the game (switching, deleting) or losing the stage stops it.
+			// The director selects a track; the existing player still owns consent and volume.
+			React.useEffect(function () {
+				if (shown) tavernMusic.play(data.music ? data.music.url : "", { title: data.music ? data.music.name : "" });
+			}, [props.sessionId, shown, data && data.music && data.music.url]);
 			React.useEffect(function () { if (shown) return function () { tavernMusic.stop(); }; }, [props.sessionId, shown]);
 			if (!shown) return null;
 			return h("section", { className: "dsh-tavern-status-section dsh-tavern-stage-section", "aria-label": "舞台" },

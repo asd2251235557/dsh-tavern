@@ -193,7 +193,7 @@ export function registerTavernHttpRoutes({
           if (!readiness.ok) throw readiness.error
           if (req.method === 'GET' && pathname === '/api/dsh-tavern/cast-asset') {
             const query = new URL(req.url, 'http://x').searchParams
-            const image = castAssets ? await castAssets.readImage(query.get('card'), query.get('file')) : undefined
+            const image = castAssets ? await castAssets.readMedia(query.get('card'), query.get('file')) : undefined
             if (image === undefined) { res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' }); res.end('not found'); return }
             // Content-addressed file names: a URL never changes what it serves.
             res.writeHead(200, { 'Content-Type': image.mediaType, 'Content-Length': image.bytes.byteLength, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' })
