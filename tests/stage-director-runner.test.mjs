@@ -7,7 +7,7 @@ import { createForegroundHandoff } from '../tavern-plugin/lib/domain/foreground-
 const chat = () => ({ id: 'story', sessionId: 'game', mode: 'story', timeline: { branchId: 'branch', revision: 1 },
   messages: [{ role: 'assistant', turn: 1, text: 'A figure arrives.\n\nAfter the interruption, the room becomes quiet.' }] })
 const assets = () => ({ player: 'Reader', cast: [{ name: 'Nora' }], background: [{ name: 'Room' }], music: [{ name: 'Theme' }] })
-const delta = { figures: [{ speaker: 'Nora', emotion: 'sadness' }], background: 'Room', music: 'Theme' }
+const delta = { sequence: 1, through: 2, done: true, figures: [{ speaker: 'Nora', emotion: 'sadness' }], background: 'Room', music: 'Theme' }
 
 test('independent director uses its own context and repairs through the real runner in one session', async () => {
   const h = await stageDirectorFixture(chat(), assets())
@@ -42,7 +42,7 @@ test('director runs while the resident settlement session is still blocked', { t
       assert.deepEqual(options.agentOptions, { provider: 'existing-background', model: 'configured' })
       const tools = new Map()
       await options.setup({ systemPrompt: { section() {}, suppressRuntimeContext() {} }, on() {},
-        tools: { restrict() {}, register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name) } } })
+        tools: { restrict({ allow }) { assert.ok(!allow.includes('stage_update'), 'restrict accepts global tools only; stage_update is registered locally') }, register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name) } } })
       const session = { id: options.sessionId, events: [], append(type, data) {
         this.events.push({ type, data }); if (type === 'subagent/descriptor') descriptors.push(data)
       } }

@@ -1,4 +1,5 @@
 import { createBackgroundAgentRunner } from '../../tavern-plugin/lib/background-agent-runner.js'
+import { stagePages } from '../../tavern-plugin/lib/domain/stage-performance.js'
 import { createStageDirector } from '../../tavern-plugin/lib/domain/stage-director.js'
 import { createPluginData } from '../../tavern-plugin/lib/domain/plugin-data.js'
 import { createChatPersistence } from '../../tavern-plugin/lib/domain/chat-persistence.js'
@@ -47,7 +48,8 @@ export async function stageDirectorFixture(chat, assets, options = {}) {
     binding: async () => (await read()).timeline, commit: stageDirectorCommit(persistence), publish: () => { published++ }, selection: async () => ({provider:'fixture', model:'fixture'}), ...options, ...overrides })
   const director = make()
   const prepare = async () => {
-    return director.prepare(await turns.readPendingTurn())
+    const request = await director.prepare(await turns.readPendingTurn())
+    return request && { ...request, call: (args, signal) => request.call(args && typeof args === 'object' && !Array.isArray(args) ? { ...request.seal, ...args } : args, signal) }
   }
   return { director, data, persistence, read, make, prepare, assets, body: turns.readPendingTurn, enabled: value => { enabled = value }, stats: () => ({ writes, published }) }
 }
@@ -55,6 +57,7 @@ export async function stageDirectorFixture(chat, assets, options = {}) {
 // A native runner with a synthetic model adapter: separate session, real tool dispatch.
 export async function runDirectorFixture(fixture, submissions) {
   const receipts = [], sessions = [], prompts = []
+  const seal = { sequence: 1, through: stagePages((await fixture.body()).text).length, done: true }
   const runner = createBackgroundAgentRunner({ id: () => 'director-fixture', backgroundTools: [{name:'posture_submit'}],
     resolveStablePrefix: () => { throw Error('Director must not inherit settlement context') },
     resolveCurrentWorldbook: () => { throw Error('Director must not inherit live worldbook context') },
@@ -68,7 +71,7 @@ export async function runDirectorFixture(fixture, submissions) {
       return {agent:{session, followup(message) { prompts.push({system:sections.map(item=>item.text()).join('\n'), text:message.content[0].text})
         work = (async () => {
           if (tools.size !== 1 || !tools.has('stage_update')) throw Error('Only the director tool may be exposed')
-          for (const delta of submissions) receipts.push(JSON.parse(await tools.get('stage_update').execute(delta)))
+          for (const delta of submissions) receipts.push(JSON.parse(await tools.get('stage_update').execute({ ...seal, ...delta })))
           session.append('assistant/message',{message:{content:[{type:'text',text:'Done.'}]}})
         })()
       }, async whenIdle() {await work}}, async dispose() {}}

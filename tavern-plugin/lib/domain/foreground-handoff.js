@@ -24,6 +24,7 @@ export function createForegroundHandoff(options = {}) {
     if (typeof turns.prepare !== 'function') throw new Error('Foreground Handoff 缺少 prepare adapter')
     // A save being reconciled (#196) finishes that first; both write the story.
     await options.waitReconcile?.(input.sessionId)
+    await options.cancelDirector?.(input.sessionId)
     // Task metadata and the opening check need the header and floor count only.
     const opening = store.openingStateForSession ? await store.openingStateForSession(input.sessionId) : null
     const chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
@@ -82,6 +83,7 @@ export function createForegroundHandoff(options = {}) {
       }, '启动后台结算')
       return true
     }
+    options.cancelDirector?.(input.sessionId, input.turn)
     later(async function () {
       const target = { sessionId: input.sessionId, turn: input.turn }
       await turns.discard(target)

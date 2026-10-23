@@ -177,6 +177,7 @@ import { createManualLedger } from './domain/manual-ledger.js'
 import { POSTURE_SUBMIT_TOOL } from './domain/posture-submission.js'
 import { createCastPresentation } from './domain/cast-presentation.js'
 import { createStageDirector, STAGE_UPDATE_TOOL } from './domain/stage-director.js'
+import { createStageDirectorStream } from './domain/stage-director-stream.js'
 import { stagePages } from './domain/stage-performance.js'
 import { stageDirectorCommit } from './stage-director-commit.js'
 import { createCastAssets, CAST_AUDIO_TYPES } from './domain/cast-assets.js'
@@ -1905,8 +1906,8 @@ export async function apply(ctx) {
     // Nor does it learn of a new one; the same signal reloads the list so the header counts it.
     onCreated: (_id, parentId) => sessionSignals.publish(parentId, { kind: 'subagents', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) }),
     systemAppend: () => runtimePrompt('system-append'),
-    resolveModelSelection: async input => backgroundModelSelection(await backgroundConfigForSession(input.sessionId)) || input.selection,
-    resolveWebSearch: async input => (await backgroundConfigForSession(input.sessionId))?.webSearchEnabled === true,
+    resolveModelSelection: async input => input.task === 'stage-director' ? input.selection : backgroundModelSelection(await backgroundConfigForSession(input.sessionId)) || input.selection,
+    resolveWebSearch: async input => input.task !== 'stage-director' && (await backgroundConfigForSession(input.sessionId))?.webSearchEnabled === true,
     backgroundTools: BACKGROUND_TOOLS,
     // Set up after the runner: plugin tools are read when a background Session is set up.
     settlementItems: () => settlementItems,
@@ -2122,18 +2123,38 @@ export async function apply(ctx) {
       background: (manifest.backgrounds || []).map(item => ({ name: item.name, url: url(item.file) })),
       music: (manifest.extras || []).filter(item => item.type === 'music' && Object.hasOwn(CAST_AUDIO_TYPES, item.ext)).map(item => ({ name: item.name, url: url(item.file) })) }
   }
+  const publishStage = sessionId => sessionSignals.publish(sessionId, { kind: 'cast', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) })
+  async function stageStreamSource(sessionId, turn) {
+    const chat = await chatHeaderForSession(sessionId, ['timeline', 'foregroundFrames', 'regenInProgress'])
+    if (!chat || chat.regenInProgress) return null
+    const operation = Object.values(chat.timeline?.operations || {}).filter(item => item.kind === 'body' && Number(item.turn) === Number(turn)).at(-1)
+    if (!operation || !chat.foregroundFrames?.[operation.id]) return null
+    return { chatId: chat.id, operationId: operation.id, status: operation.status, branchId: chat.timeline.branchId, revision: chat.timeline.revision }
+  }
   const stageDirector = createStageDirector({ enabled: cardStageOn, turns: pluginTurns, data: pluginData, catalog: stageCatalog,
+    readContext: async body => {
+      const chat = await chatHeaderForSession(body.sessionId, ['timeline', 'foregroundFrames'])
+      const frame = body.operationId ? chat?.foregroundFrames?.[body.operationId] : Object.values(chat?.foregroundFrames || {}).filter(item => item.turn === body.turn && item.branchId === chat?.timeline?.branchId).at(-1)
+      if (!frame) return {}
+      const { writingRules, ...reference } = frame.context
+      return { input: frame.userInput?.projectedText || frame.userInput?.sourceText || '', ...reference }
+    },
     binding: async sessionId => (await chatHeaderForSession(sessionId, ['timeline']))?.timeline,
     commit: stageDirectorCommit(chatPersistence),
     selection: async sessionId => backgroundModelSelection(await backgroundConfigForSession(sessionId)),
     runAgent: input => backgroundAgentRunner.run(input),
-    publish: sessionId => sessionSignals.publish(sessionId, { kind: 'cast', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) }) })
-  const directorJobs = createSettlementJobs({ run: async (sessionId, signal) => stageDirector.run(await pluginTurns.readPendingTurn(sessionId), signal), onSettled: () => {} })
+    publish: publishStage })
+  const stageDirectorStream = createStageDirectorStream({ director: stageDirector, source: stageStreamSource, catalog: stageCatalog, publish: publishStage,
+    warn: error => console.warn('dsh-tavern: 舞台流已停止', str(error?.message || error)) })
+  const directorJobs = createSettlementJobs({ run: async (sessionId, signal) => {
+    const body = await pluginTurns.readPendingTurn(sessionId)
+    if (!await stageDirectorStream.finish(body, signal)) await stageDirector.run(body, signal)
+  }, onSettled: () => {} })
   function directRound(sessionId) {
     void directorJobs.cancel(sessionId, { wait: false }).then(() => directorJobs.start(sessionId))
       .catch(error => console.warn('dsh-tavern: 舞台导演任务失败', str(error?.message || error)))
   }
-  ctx.effect(() => () => directorJobs.dispose())
+  ctx.effect(() => () => { stageDirectorStream.dispose(); return directorJobs.dispose() })
   const settlementItems = createSettlementItems({ items: () => [castPresentation.settlement], plugins: () => pluginApi.settlement })
   const postureItem = createPostureItem({ prompt: () => runtimePrompt('posture-settlement'), tool: POSTURE_SUBMIT_TOOL })
   function castAssetView(cardPath, manifest) {
@@ -2177,12 +2198,22 @@ export async function apply(ctx) {
     const turns = []
     for (const turn of wanted) {
       const material = await pluginTurns.readTurn(str(sessionId), turn).catch(() => null) || (turn === wanted.at(-1) ? await pluginTurns.readPendingTurn(str(sessionId)).catch(() => null) : null)
-      if (material && material.turn === turn) turns.push({ turn, key: material.key, text: material.text, lines: annotated.turns[turn] || [],
-        pages: stagePages(material.text, annotated.turns[turn] || []), performances: await stageDirector.performances(str(sessionId), turn, material.key) })
+      if (material && material.turn === turn) {
+        const directed = await stageDirector.presentation(str(sessionId), turn, material.key)
+        turns.push({ turn, key: directed?.presentationKey || material.key, text: material.text, lines: annotated.turns[turn] || [],
+          pages: stagePages(material.text, annotated.turns[turn] || []), performances: directed?.performances || [] })
+      }
     }
     const manifest = await castAssets.read(card.path)
     const assets = await stageCatalog(str(sessionId))
-    const stage = await stageDirector.state(str(sessionId), turns.at(-1)?.turn)
+    const preview = await stageDirectorStream.preview(str(sessionId))
+    if (preview) {
+      const index = turns.findIndex(item => item.turn === preview.turn)
+      const row = { turn: preview.turn, key: preview.key, text: preview.pages.map(page => page.text).join('\n'), lines: [], pages: preview.pages, performances: preview.performances }
+      if (index < 0) turns.push(row)
+      else turns[index] = row
+    }
+    const stage = preview?.state || await stageDirector.state(str(sessionId), turns.at(-1)?.turn)
     // The stage is the card's choice: off for ordinary cards, on when the player or the card turned it on.
     return { enabled: manifest.stage === true, player: card.player, card: { name: card.name, imageUrl: '/api/dsh-tavern/card-image?path=' + encodeURIComponent(card.path) },
       background: assets.background.find(item => item.name === stage.background)?.url || '',
@@ -2916,6 +2947,10 @@ export async function apply(ctx) {
     tasks: backgroundTasks,
     queueBackground: queueSettlement,
     directRound,
+    cancelDirector: (sessionId, turn) => {
+      stageDirectorStream.cancel(sessionId, turn)
+      if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
+    },
     waitBackground: chatId => Promise.all([settlementJobs.pending(chatId), settlementRun.pluginTaskJob(chatId)]),
     prefilterWorldbook: chatId => worldbookPrefilter.start(chatId),
     cancelPrefilter: chatId => worldbookPrefilter.cancel(chatId),
@@ -3416,6 +3451,7 @@ export async function apply(ctx) {
     modelRequestLog,
     pluginCompactionNotes: pluginApi.compactionNotes,
     pluginSettlementProgress,
+    stageDirectorStream,
     requestCoordinates,
     runtimePrompt,
     sessionStateForSession,
