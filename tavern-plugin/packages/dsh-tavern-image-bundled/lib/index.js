@@ -5308,15 +5308,17 @@ function dedupeCharacterNegativePriority(prompt, uc) {
   return { prompt: positiveGroups.join(', '), uc: negativeGroups.join(', ') }
 }
 
-function compileCharacterList(list, scoped, cfg, style, backend = cfg.imageBackend) {
+function compileCharacterList(list, scoped, cfg, style, backend = cfg.imageBackend, options = {}) {
   const weightMode = resolveWeightMode(cfg, backend, style)
+  const characterNegativePriority = options?.characterNegativePriority === true
   return (Array.isArray(list) ? list : []).map(item => {
     const raw = String(item?.prompt ?? '')
     const expanded = expandRosterCalls(raw, scoped, cfg.traitMode, { style })
-    const injected = injectDefinitions(expanded, scoped, cfg, { style, raw, keepNegative: true })
+    const injected = injectDefinitions(expanded, scoped, cfg, { style, raw, keepNegative: characterNegativePriority })
     const prompt = normalizePrompts(applyWeights(injected.text, weightMode), scoped, { backend, style })
     const uc = [String(item?.uc ?? ''), ...(injected.negatives ?? [])].filter(Boolean).join(', ')
     const normalizedUc = normalizePrompts(applyWeights(uc, weightMode), scoped, { backend, style })
+    if (!characterNegativePriority) return { prompt, centers: String(item?.centers ?? '').trim(), uc: normalizedUc }
     const cleaned = dedupeCharacterNegativePriority(prompt, normalizedUc)
     return { prompt: cleaned.prompt, centers: String(item?.centers ?? '').trim(), uc: cleaned.uc }
   }).filter(item => item.prompt)
@@ -5564,8 +5566,8 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
 
 export function compileChannelJob({ params, config, definitions, channel = null, onStage = null }) {
   const prepared = prepareImagePrompt({ params, config, definitions, channel, onStage })
-  const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, channel?.provider ?? config.imageBackend), channel?.provider ?? config.imageBackend)
   const nativeNovelai = channel?.provider === 'novelai' && channel?.options?.protocol !== 'chat'
+  const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, channel?.provider ?? config.imageBackend), channel?.provider ?? config.imageBackend, { characterNegativePriority: nativeNovelai })
   if (!nativeNovelai && characters.length) {
     prepared.positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(', ')
     prepared.negative = [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join(', ')
