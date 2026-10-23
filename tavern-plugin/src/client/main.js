@@ -845,7 +845,6 @@ window.__ModuleLoader__.load({
 // @include-domain stage-performance-playback.js
 // @include modules/stage-runtime.js
 // @include features/stage-runtime.js
-// @include features/cast-stage.js
 
 // @include ui/message-frame.js
 

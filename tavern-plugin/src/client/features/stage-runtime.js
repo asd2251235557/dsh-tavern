@@ -45,3 +45,181 @@ function useTavernStageRuntime(sessionId) {
 	const snapshot = React.useCallback(() => tavernStageRuntime.getSnapshot(sessionId), [sessionId]);
 	return React.useSyncExternalStore(subscribe, snapshot, snapshot);
 }
+
+// The stage scene, in Tavern's look or a plugin's registerStageView.
+function TavernStageFigure(props) {
+	const [failed, setFailed] = React.useState("");
+	const h = React.createElement;
+	const url = failed === props.url ? "" : props.url;
+	return h("div", { className: "dsh-tavern-stage-figure" + (props.dim ? " is-dim" : ""), "data-speaker": props.name },
+		h("div", { className: "dsh-tavern-stage-figure-body" },
+			url ? h("img", { key: url, src: url, alt: props.name, onError: function () { setFailed(props.url); } })
+				: h("span", { className: "dsh-tavern-stage-figure-letter", style: { "--dsh-cast-hue": tavernCastHue(props.name) } }, Array.from(props.name)[0] || "?")));
+}
+
+/** One stage frame: who is on stage at this beat, and the text box. */
+function TavernStageScene(props) {
+	const h = React.createElement;
+	const data = props.data, beats = props.beats, index = props.index;
+	const beat = beats[index] || null;
+	const scene = props.scene;
+	return h("div", { ref: props.sceneRef, className: "dsh-tavern-stage-scene", onClick: props.onAdvance },
+		h("div", { className: "dsh-tavern-stage-backdrop" + (scene.backdrop ? " is-scene" : ""), style: scene.background ? { "--dsh-stage-backdrop": "url(\"" + scene.background + "\")" } : undefined }),
+		h("div", { className: "dsh-tavern-stage-figures" }, scene.figures.map(function (figure) {
+			const name = figure.name;
+			const speaker = beat && tavernCastCharacter(data.cast, beat.speaker);
+			const speaking = beat && (speaker ? speaker.name : beat.speaker) === name;
+			return h(TavernStageFigure, { key: name, name: name, url: figure.url, dim: beat && beat.kind === "line" && !speaking });
+		})),
+		beat ? h("div", { className: "dsh-tavern-stage-textbox" },
+			beat.kind === "line" ? h("div", { className: "dsh-tavern-stage-name", style: { "--dsh-cast-hue": tavernCastHue(beat.speaker) } }, beat.speaker,
+				TAVERN_CAST_EMOTIONS[beat.emotion] && beat.emotion !== "neutral" ? h("span", { className: "dsh-tavern-cast-emotion" }, TAVERN_CAST_EMOTIONS[beat.emotion]) : null) : null,
+			h("div", { key: index, className: "dsh-tavern-stage-text" + (beat.kind === "narration" ? " is-narration" : "") }, beat.text),
+			props.footer || null)
+			: h("div", { className: "dsh-tavern-stage-textbox is-empty" }, props.empty || "还没有可以演出的正文"));
+}
+
+/** The stage data as plugins see it (tavernUi.getStage). */
+function tavernStagePublicData(data) {
+	return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", music: data.music, stage: data.stage, characters: data.cast || [], turns: data.turns || [] };
+}
+
+// The look of the stage: Tavern's own, or a plugin's registerStageView; remembered per browser.
+// With no choice made, a plugin view is used: installing one is asking for it.
+function useTavernStageView(sessionId) {
+	return useTavernPluginViewChoice(tavernUiExtensions.stageViews(), "dsh-tavern-stage-view", sessionId);
+}
+
+function TavernStageViewSwitch(props) {
+	if (!props.choice.views.length) return null;
+	return React.createElement(TavernPluginViewSwitch, { choice: props.choice, label: "舞台样式", className: "dsh-tavern-stage-view-switch" });
+}
+
+function TavernStagePluginScene(props) {
+	const rendered = props.view.render(props.input);
+	return rendered === null || rendered === undefined ? props.fallback : rendered;
+}
+
+/** The scene in the chosen look; a plugin view that fails or returns null shows Tavern's own. */
+function TavernStageSceneView(props) {
+	const builtin = React.createElement(TavernStageScene, props);
+	if (!props.view) return builtin;
+	const beat = props.beats[props.index] || null;
+	const input = { gameId: props.sessionId, stage: tavernStagePublicData(props.data), beats: props.beats, index: props.index, beat: beat,
+		fullscreen: true, advance: props.onAdvance, footer: props.footer || null };
+	return React.createElement(tavernPluginBoundary(), { key: props.view.key, owner: props.view.owner, fallback: builtin },
+		React.createElement(TavernStagePluginScene, { view: props.view, input: input, fallback: builtin }));
+}
+
+function playTavernStagePerformance(root, event, id) {
+	if (!root || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+	const target = event.op === "screen.play" ? root : Array.from(root.querySelectorAll("[data-speaker]")).find(function (node) { return node.dataset.speaker === event.actor; });
+	if (!target) return null;
+	const frames = event.op === "screen.play" ? ["none", "translateX(-3px)", "translateX(3px)", "translateX(-2px)", "none"]
+		: event.motion === "nod" ? ["none", "translateY(2%)", "none", "translateY(1%)", "none"] : ["none", "translateY(-6%)", "none"];
+	return target.animate(frames.map(function (transform) { return { transform: transform }; }), { id: "stage:" + id, duration: event.op === "screen.play" ? 450 : 650, easing: "ease-in-out" });
+}
+
+// Reading aloud is on once voicing is; the 朗读 button turns it off for this browser.
+const TAVERN_STAGE_READ_KEY = "dsh-tavern-stage-read";
+function useTavernStageReading() {
+	const speech = useTavernSpeechSettings();
+	const [reading, setReading] = React.useState(() => { try { return window.localStorage.getItem(TAVERN_STAGE_READ_KEY) !== "0"; } catch (_) { return true; } });
+	function toggle() {
+		setReading(!reading);
+		try { window.localStorage.setItem(TAVERN_STAGE_READ_KEY, reading ? "0" : "1"); } catch (_) {}
+	}
+	const available = Boolean(speech && speech.enabled);
+	return { available, on: available && reading, toggle };
+}
+function tavernBeatSpeech(sessionId, beat) {
+	return beat.kind === "line" ? { sessionId: sessionId, speaker: beat.speaker, text: (beat.quotes || []).join(" ") || beat.text, emotion: beat.emotion }
+		: { sessionId: sessionId, text: beat.text, narration: true };
+}
+function TavernStageReadButton(props) {
+	if (!props.reading.available) return null;
+	return React.createElement("button", { type: "button", className: props.reading.on ? "is-on" : "", "aria-pressed": props.reading.on, onClick: props.reading.toggle }, "朗读");
+}
+
+// The fullscreen stage only shows its session: page, auto paging and playback belong to the
+// session runtime, which releases them when the view closes and restores the page on reopen.
+function TavernStageScreen(props) {
+	const h = React.createElement, id = props.sessionId;
+	const { data, scene, reader } = useTavernStageRuntime(id);
+	const reading = useTavernStageReading(), choice = useTavernStageView(id);
+	const sceneRef = React.useRef(null), readingOn = React.useRef(reading.on);
+	readingOn.current = reading.on;
+	const [draft, setDraft] = React.useState(""), [sending, setSending] = React.useState(false);
+	const session = () => props.sessions?.binding(id)?.session;
+	const running = React.useSyncExternalStore(fn => session()?.subscribe(fn) || (() => {}), () => session()?.getSnapshot().running === true);
+	React.useEffect(() => tavernStageRuntime.attach(id, {
+		animate: (event, key) => playTavernStagePerformance(sceneRef.current, event, key),
+		speech: { on: () => readingOn.current, speak: beat => tavernSpeech.speak(tavernBeatSpeech(id, beat)), stop: () => tavernSpeech.stop() },
+		music: { play: track => tavernMusic.play(track ? track.url : "", { title: track ? track.name : "" }), stop: () => tavernMusic.stop() }
+	}), [id]);
+	React.useEffect(() => { tavernStageRuntime.sync(id); }, [id, reading.on]);
+	const latest = data.turns[data.turns.length - 1];
+	const beats = React.useMemo(() => latest ? latest.pages.map(page => ({ turn: latest.turn, ...page })) : [], [latest]);
+	const atEnd = reader.index >= beats.length - 1, step = delta => tavernStageRuntime.page(id, index => index + delta);
+	React.useEffect(() => {
+		function onKey(event) {
+			if (event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
+			if (event.key === "Escape") { event.stopPropagation(); props.onClose(); }
+			else if (event.key === "ArrowRight" || event.key === " " || event.key === "Enter") { event.preventDefault(); step(1); }
+			else if (event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
+		}
+		document.addEventListener("keydown", onKey, true);
+		return () => document.removeEventListener("keydown", onKey, true);
+	}, [id, props.onClose]);
+	async function send(event) {
+		event.preventDefault();
+		const text = draft.trim();
+		if (!text || sending) return;
+		setSending(true);
+		try { await props.submit(id, text); setDraft(""); }
+		catch (error) { tavernErrorHub.report("舞台发送", error); }
+		finally { setSending(false); }
+	}
+	const footer = h("div", { className: "dsh-tavern-stage-controls", onClick: event => event.stopPropagation() },
+		h("button", { type: "button", onClick: () => step(-1), disabled: reader.index <= 0, "aria-label": "上一句" }, "‹"),
+		h("span", { className: "dsh-tavern-stage-progress" }, beats.length ? (reader.index + 1) + " / " + beats.length : ""),
+		h("button", { type: "button", onClick: () => step(1), disabled: atEnd, "aria-label": "下一句" }, "›"),
+		h("button", { type: "button", className: reader.auto ? "is-on" : "", onClick: () => tavernStageRuntime.setAuto(id, !reader.auto), "aria-pressed": reader.auto }, "自动"),
+		h("button", { type: "button", onClick: () => tavernStageRuntime.page(id, beats.length - 1, "skip") }, "跳过"),
+		h(TavernStageReadButton, { reading }),
+		h(TavernMusicToggle, null),
+		h("span", { className: "dsh-tavern-spacer" }),
+		h("button", { type: "button", onClick: props.onClose }, "退出舞台"));
+	const generating = props.generating ?? running;
+	return h("div", { className: "dsh-tavern-stage-overlay", role: "dialog", "aria-modal": "true", "aria-label": "舞台" },
+		h(TavernStageSceneView, { scene, view: choice.view, sessionId: id, data, beats, index: reader.index, sceneRef, onAdvance: () => step(1), footer }),
+		atEnd ? h("form", { className: "dsh-tavern-stage-input", onSubmit: send },
+			h("input", { value: draft, onChange: event => setDraft(event.target.value), placeholder: generating ? "正在生成下一轮…" : "接下来做什么？", "aria-label": "舞台输入", disabled: sending }),
+			h("button", { type: "submit", disabled: sending || !draft.trim() }, sending ? "发送中…" : "发送")) : null);
+}
+
+// Two entries open the same fullscreen stage: the chat header's 「舞台」 and 酒馆状态's 「全屏舞台」.
+function TavernStageEntry(props) {
+	const stage = useTavernStageRuntime(props.sessionId);
+	const [opened, setOpened] = React.useState(false);
+	const close = React.useCallback(() => setOpened(false), []);
+	if (!stage.data || stage.data.enabled === false) return null;
+	const h = React.createElement, open = () => setOpened(true);
+	return h(React.Fragment, null,
+		props.header ? h("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-stage-toggle", title: "全屏舞台", "aria-label": "舞台", onClick: open },
+			h("svg", { viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true, focusable: "false" },
+				h("path", { d: "M3.5 4.5h17M5 4.5c0 4 1.8 6.5 4.5 7.5M19 4.5c0 4-1.8 6.5-4.5 7.5M3.5 19.5h17M7 19.5v-3.5h10v3.5" })),
+			h("span", null, "舞台")) : h("button", { type: "button", className: "dsh-tavern-btn", onClick: open }, "全屏舞台"),
+		opened ? require("react-dom").createPortal(h(TavernStageScreen, { ...props, onClose: close }), document.body) : null);
+}
+
+// 酒馆状态 keeps an entry plus cast material, voices and the stage look until the stage settings page.
+function TavernStageStatus(props) {
+	const stage = useTavernStageRuntime(props.sessionId);
+	const choice = useTavernStageView(props.sessionId);
+	if (!stage.data || stage.data.enabled === false) return null;
+	const h = React.createElement;
+	return h("section", { className: "dsh-tavern-status-section", "aria-label": "舞台素材" }, h(TavernStageEntry, props), h(TavernStageViewSwitch, { choice }),
+		h("details", { className: "dsh-tavern-stage-cast" }, h("summary", null, "角色素材"),
+			h(TavernCastManager, { sessionId: props.sessionId, data: stage.data, onCast: () => tavernStageRuntime.refresh(props.sessionId) })));
+}

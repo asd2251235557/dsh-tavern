@@ -13413,359 +13413,7 @@ function bindTavernFontZoom(node, win) {
 			}));
 		}
 
-function tavernCastCharacter(cast, name) {
-  return (cast || []).find(item => item.name === name || (item.aliases || []).includes(name)) || null
-}
-
-// Accepted director deltas are the only stage-state input. Reading never resets it.
-function emptyStageState() {
-  return { figures: [], background: null, music: null }
-}
-
-function foldStageState(state, delta) {
-  const next = { ...state, figures: state.figures.map(figure => ({ ...figure })) }
-  if (delta.figures === null) next.figures = []
-  else for (const change of delta.figures || []) {
-    const index = next.figures.findIndex(figure => figure.speaker === change.speaker)
-    if (change.remove) {
-      if (index >= 0) next.figures.splice(index, 1)
-    } else if (index >= 0) {
-      if (change.emotion !== undefined) next.figures[index].emotion = change.emotion
-    } else next.figures.push({ speaker: change.speaker, emotion: change.emotion ?? 'neutral' })
-  }
-  for (const field of ['background', 'music']) if (Object.hasOwn(delta, field)) next[field] = delta[field]
-  return next
-}
-// A page visit owns its timers and animations, never persistent presentation state.
-function createStagePerformancePlayback({ play, schedule = setTimeout, cancel = clearTimeout }) {
-  let visit = null, blocked = false
-  const played = new Set(), pending = new Map(), animations = new Set()
-  function stop() {
-    for (const timer of pending.values()) cancel(timer)
-    pending.clear()
-    for (const animation of animations) animation.cancel()
-    animations.clear()
-  }
-  function update({ id, at, mode, events }) {
-    if (id !== visit) { stop(); played.clear(); visit = id; blocked = false }
-    if (!['page', 'live'].includes(mode)) { blocked = true; stop(); return }
-    if (blocked) return
-    events.forEach((event, ordinal) => {
-      if (event.at !== at || played.has(ordinal) || pending.has(ordinal)) return
-      pending.set(ordinal, schedule(() => {
-        if (visit !== id || blocked) return
-        pending.delete(ordinal)
-        played.add(ordinal)
-        const animation = play(event, id + ':' + ordinal)
-        if (animation) {
-          animations.add(animation)
-          animation.finished.then(() => animations.delete(animation), () => animations.delete(animation))
-        }
-      }, mode === 'page' ? 1000 : 0))
-    })
-  }
-  return { update, dispose() { stop(); visit = null; played.clear() } }
-}
-// A read-only session snapshot. Refresh never clears accepted presentation.
-const EMPTY_STAGE_RUNTIME = Object.freeze({ data: null, scene: null, pending: false, error: "" });
-function createStageRuntimeStore({ read, project, changed }) {
-	let state = EMPTY_STAGE_RUNTIME, revision = 0, dirty = false, disposed = false, flight = null, request = null;
-	function publish(next) { state = next; changed(); }
-	async function drain() {
-		while (dirty && !disposed) {
-			dirty = false;
-			const token = revision;
-			request = new AbortController();
-			try {
-				const value = await read(request.signal);
-				if (disposed || token !== revision) continue;
-				const data = JSON.stringify(value) === JSON.stringify(state.data) ? state.data : value;
-				const candidate = data === state.data ? state.scene : project(data);
-				const scene = JSON.stringify(candidate) === JSON.stringify(state.scene) ? state.scene : candidate;
-				publish({ data, scene, pending: false, error: "" });
-			} catch (error) {
-				if (!disposed && token === revision) publish({ ...state, pending: false, error: String(error.message || error) });
-			}
-		}
-	}
-	const store = {
-		getSnapshot: () => state,
-		refresh(reset = false) {
-			if (disposed) return Promise.resolve();
-			revision++; dirty = true;
-			if (reset) { request?.abort(); state = EMPTY_STAGE_RUNTIME; }
-			if (!state.pending) publish({ ...state, pending: true, error: "" });
-			if (!flight) flight = Promise.resolve().then(drain).finally(() => { flight = null; if (dirty && !disposed) return store.refresh(); });
-			return flight;
-		},
-		dispose() { disposed = true; dirty = false; revision++; request?.abort(); publish(EMPTY_STAGE_RUNTIME); }
-	};
-	return store;
-}
-
-// Native bindings own stores, not React mounts. Only open the selected session;
-// keep previously opened sessions until removal, and retire replaced bindings.
-function createStageRuntimeSessions({ read, project, watch }) {
-	const records = new Map(), listeners = new Map();
-	function notify(id) { for (const fn of listeners.get(id) || []) fn(); }
-	function release(id) {
-		const record = records.get(id);
-		record.stop(); records.delete(id); record.store.dispose();
-	}
-	return {
-		getSnapshot: id => records.get(id)?.store.getSnapshot() || EMPTY_STAGE_RUNTIME,
-		subscribe(id, fn) {
-			if (!listeners.has(id)) listeners.set(id, new Set());
-			listeners.get(id).add(fn);
-			return () => { const set = listeners.get(id); set.delete(fn); if (!set.size) listeners.delete(id); };
-		},
-		refresh: id => records.get(id)?.store.refresh(),
-		start(sessions) {
-			function reconcile() {
-				const snapshot = sessions.list.getSnapshot(), rows = snapshot.byId || {};
-				const selected = Object.values(rows).find(row => row.retainedBy?.mainView > 0)?.id || snapshot.current;
-				for (const id of records.keys()) if (!rows[id] && id !== selected) release(id);
-				const ids = new Set(records.keys());
-				if (selected && rows[selected]?.origin !== "subagent") ids.add(selected);
-				for (const id of ids) {
-					const binding = sessions.binding(id), previous = records.get(id);
-					if (previous?.binding === binding) continue;
-					if (previous) release(id);
-					if (!binding) continue;
-					const store = createStageRuntimeStore({ read: signal => read(id, signal), project, changed: () => notify(id) });
-					const record = { binding, store, stop() {} };
-					records.set(id, record);
-					record.stop = watch(id, binding, reset => store.refresh(reset));
-					void store.refresh();
-				}
-			}
-			const stop = sessions.list.subscribe(reconcile);
-			reconcile();
-			return () => { stop(); for (const id of records.keys()) release(id); };
-		}
-	};
-}
-// Resolve static presentation once per accepted snapshot, not in each stage view.
-function stageRuntimeScene(data) {
-	return { background: data.background || data.card.imageUrl || "", backdrop: Boolean(data.background),
-		figures: data.stage.figures.map(figure => ({ name: figure.speaker, url: tavernCastImage(data, figure.speaker, figure.emotion) })) };
-}
-
-// Shared with the cast editor; image selection is not a second scene projection.
-function tavernCastImage(data, name, emotion, preferAvatar) {
-	const character = tavernCastCharacter(data.cast, name);
-	const sprites = character ? character.sprites || {} : {};
-	const sprite = sprites[emotion] || sprites.neutral || Object.values(sprites)[0] || "";
-	const avatar = character && (character.avatars || {})[emotion] || character && character.avatarUrl || (name === data.card.name ? data.card.imageUrl : "");
-	return preferAvatar ? avatar || sprite : sprite || avatar;
-}
-
-function watchStageRuntime(sessionId, binding, refresh) {
-	let authority = null, running = binding.session.getSnapshot().running;
-	const wake = () => refresh();
-	const selection = liveTavernView.select(sessionId, [["chatId"], ["card", "path"], ["suppressedDshTurns"], ["regeneratedDshTurns"], ["settlementTurn"], ["updatedAt"]]);
-	const stops = [selection.subscribe(() => {
-		const view = selection.getSnapshot().view;
-		if (!view) return;
-		// An adopted regeneration replaces text, not the scene's authority domain.
-		const withdrawn = (view.suppressedDshTurns || []).filter(turn => !Object.values(view.regeneratedDshTurns || {}).includes(turn));
-		const next = JSON.stringify([view.chatId, view.card?.path, withdrawn]);
-		const reset = authority !== null && authority !== next;
-		authority = next; refresh(reset);
-	}), binding.session.subscribe(() => {
-		const next = binding.session.getSnapshot().running;
-		if (next !== running) { running = next; wake(); }
-	}), tavernCoordination.subscribe(sessionId, wake), tavernSessionSignals.subscribe(sessionId, "cast", wake, undefined, wake)];
-	for (const event of ["dsh-tavern-settings-changed", "dsh-tavern-card-stage-changed", "focus"]) window.addEventListener(event, wake);
-	// Reconcile missed notifications without creating a director job or writing history.
-	const timer = window.setInterval(() => { if (!document.hidden) wake(); }, 5000);
-	return () => {
-		stops.forEach(stop => stop()); window.clearInterval(timer);
-		for (const event of ["dsh-tavern-settings-changed", "dsh-tavern-card-stage-changed", "focus"]) window.removeEventListener(event, wake);
-	};
-}
-const tavernStageRuntime = createStageRuntimeSessions({
-	read: (id, signal) => rpc("castStage", { count: 5 }, id, { signal }), project: stageRuntimeScene, watch: watchStageRuntime
-});
-function useTavernStageRuntime(sessionId) {
-	const subscribe = React.useCallback(fn => tavernStageRuntime.subscribe(sessionId, fn), [sessionId]);
-	const snapshot = React.useCallback(() => tavernStageRuntime.getSnapshot(sessionId), [sessionId]);
-	return React.useSyncExternalStore(subscribe, snapshot, snapshot);
-}
-		function TavernStageFigure(props) {
-			const [failed, setFailed] = React.useState("");
-			const h = React.createElement;
-			const url = failed === props.url ? "" : props.url;
-			return h("div", { className: "dsh-tavern-stage-figure" + (props.dim ? " is-dim" : ""), "data-speaker": props.name },
-				h("div", { className: "dsh-tavern-stage-figure-body" },
-					url ? h("img", { key: url, src: url, alt: props.name, onError: function () { setFailed(props.url); } })
-						: h("span", { className: "dsh-tavern-stage-figure-letter", style: { "--dsh-cast-hue": tavernCastHue(props.name) } }, Array.from(props.name)[0] || "?")));
-		}
-
-		/** One stage frame: who is on stage at this beat, and the text box. */
-		function TavernStageScene(props) {
-			const h = React.createElement;
-			const data = props.data, beats = props.beats, index = props.index;
-			const beat = beats[index] || null;
-			const scene = props.scene;
-			return h("div", { ref: props.sceneRef, className: "dsh-tavern-stage-scene", onClick: props.onAdvance },
-				h("div", { className: "dsh-tavern-stage-backdrop" + (scene.backdrop ? " is-scene" : ""), style: scene.background ? { "--dsh-stage-backdrop": "url(\"" + scene.background + "\")" } : undefined }),
-				h("div", { className: "dsh-tavern-stage-figures" }, scene.figures.map(function (figure) {
-					const name = figure.name;
-					const speaker = beat && tavernCastCharacter(data.cast, beat.speaker);
-					const speaking = beat && (speaker ? speaker.name : beat.speaker) === name;
-					return h(TavernStageFigure, { key: name, name: name, url: figure.url, dim: beat && beat.kind === "line" && !speaking });
-				})),
-				beat ? h("div", { className: "dsh-tavern-stage-textbox" },
-					beat.kind === "line" ? h("div", { className: "dsh-tavern-stage-name", style: { "--dsh-cast-hue": tavernCastHue(beat.speaker) } }, beat.speaker,
-						TAVERN_CAST_EMOTIONS[beat.emotion] && beat.emotion !== "neutral" ? h("span", { className: "dsh-tavern-cast-emotion" }, TAVERN_CAST_EMOTIONS[beat.emotion]) : null) : null,
-					h("div", { key: index, className: "dsh-tavern-stage-text" + (beat.kind === "narration" ? " is-narration" : "") }, beat.text),
-					props.footer || null)
-					: h("div", { className: "dsh-tavern-stage-textbox is-empty" }, props.empty || "还没有可以演出的正文"));
-		}
-
-		/** The stage data as plugins see it (tavernUi.getStage). */
-		function tavernStagePublicData(data) {
-			return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", music: data.music, stage: data.stage, characters: data.cast || [], turns: data.turns || [] };
-		}
-
-		// The look of the stage: Tavern's own, or a plugin's registerStageView; remembered per browser.
-		// With no choice made, a plugin view is used: installing one is asking for it.
-		function useTavernStageView(sessionId) {
-			return useTavernPluginViewChoice(tavernUiExtensions.stageViews(), "dsh-tavern-stage-view", sessionId);
-		}
-
-		function TavernStageViewSwitch(props) {
-			if (!props.choice.views.length) return null;
-			return React.createElement(TavernPluginViewSwitch, { choice: props.choice, label: "舞台样式", className: "dsh-tavern-stage-view-switch" });
-		}
-
-		function TavernStagePluginScene(props) {
-			const rendered = props.view.render(props.input);
-			return rendered === null || rendered === undefined ? props.fallback : rendered;
-		}
-
-		/** The scene in the chosen look; a plugin view that fails or returns null shows Tavern's own. */
-		function TavernStageSceneView(props) {
-			const builtin = React.createElement(TavernStageScene, props);
-			if (!props.view) return builtin;
-			const beat = props.beats[props.index] || null;
-			const input = { gameId: props.sessionId, stage: tavernStagePublicData(props.data), beats: props.beats, index: props.index, beat: beat,
-				fullscreen: true, advance: props.onAdvance, footer: props.footer || null };
-			return React.createElement(tavernPluginBoundary(), { key: props.view.key, owner: props.view.owner, fallback: builtin },
-				React.createElement(TavernStagePluginScene, { view: props.view, input: input, fallback: builtin }));
-		}
-
-		// Opening/refreshing restores the page, not its one-shots. Only explicit visits
-		// or a newly arriving body can play; director notifications keep the same visit.
-		function useTavernStageReader(data, sessionId) {
-			const latest = data && data.turns[data.turns.length - 1];
-			const key = latest ? latest.key : "";
-			const beats = React.useMemo(function () { return latest ? latest.pages.map(function (page) { return Object.assign({ turn: latest.turn }, page); }) : []; }, [key, latest && JSON.stringify(latest.pages)]);
-			const [position, setPosition] = React.useState({ key: "", index: 0, visit: 0, mode: "refresh" });
-			const current = position.key === key && position.sessionId === sessionId ? position : { key: key, index: 0, visit: position.visit, mode: "refresh" };
-			React.useEffect(function () {
-				setPosition(function (old) { return old.key === key && old.sessionId === sessionId ? old : { sessionId: sessionId, key: key, index: 0, visit: old.visit + 1, mode: old.key && old.sessionId === sessionId ? "live" : "refresh" }; });
-			}, [key, sessionId]);
-			function setIndex(value, mode) {
-				setPosition(function (old) {
-					const index = Math.max(0, Math.min(beats.length - 1, typeof value === "function" ? value(current.index) : value));
-					if (index === current.index && mode !== "skip") return old;
-					return { sessionId: sessionId, key: key, index: index, visit: old.visit + 1, mode: mode || "page" };
-				});
-			}
-			return { beats: beats, index: current.index, setIndex: setIndex, turn: latest && latest.turn,
-				visit: key + ":" + current.visit, mode: current.mode, events: latest ? latest.performances : [] };
-		}
-
-		function playTavernStagePerformance(root, event, id) {
-			if (!root || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
-			const target = event.op === "screen.play" ? root : Array.from(root.querySelectorAll("[data-speaker]")).find(function (node) { return node.dataset.speaker === event.actor; });
-			if (!target) return null;
-			const frames = event.op === "screen.play" ? ["none", "translateX(-3px)", "translateX(3px)", "translateX(-2px)", "none"]
-				: event.motion === "nod" ? ["none", "translateY(2%)", "none", "translateY(1%)", "none"] : ["none", "translateY(-6%)", "none"];
-			return target.animate(frames.map(function (transform) { return { transform: transform }; }), { id: "stage:" + id, duration: event.op === "screen.play" ? 450 : 650, easing: "ease-in-out" });
-		}
-
-		// Reading the stage aloud: on by default once voicing is on; the button turns it off for this browser.
-		const TAVERN_STAGE_READ_KEY = "dsh-tavern-stage-read";
-		function useTavernStageReading() {
-			const speech = useTavernSpeechSettings();
-			const [reading, setReading] = React.useState(function () { try { return window.localStorage.getItem(TAVERN_STAGE_READ_KEY) !== "0"; } catch (_) { return true; } });
-			function toggle() {
-				const next = !reading;
-				setReading(next);
-				if (!next) tavernSpeech.stop();
-				try { window.localStorage.setItem(TAVERN_STAGE_READ_KEY, next ? "1" : "0"); } catch (_) {}
-			}
-			React.useEffect(function () { return function () { tavernSpeech.stop(); }; }, []);
-			const available = Boolean(speech && speech.enabled);
-			return { available: available, on: available && reading, toggle: toggle };
-		}
-		function tavernBeatSpeech(sessionId, beat) {
-			return beat.kind === "line" ? { sessionId: sessionId, speaker: beat.speaker, text: (beat.quotes || []).join(" ") || beat.text, emotion: beat.emotion }
-				: { sessionId: sessionId, text: beat.text, narration: true };
-		}
-		function TavernStageReadButton(props) {
-			if (!props.reading.available) return null;
-			return React.createElement("button", { type: "button", className: props.reading.on ? "is-on" : "", "aria-pressed": props.reading.on, onClick: props.reading.toggle }, "朗读");
-		}
-
-		function TavernStageFullscreen(props) {
-			const h = React.createElement;
-			const reader = props.reader;
-			const [auto, setAuto] = React.useState(false);
-			const reading = useTavernStageReading();
-			const [draft, setDraft] = React.useState("");
-			const [sending, setSending] = React.useState(false);
-			const atEnd = reader.index >= reader.beats.length - 1;
-			function step(delta) { reader.setIndex(function (value) { return Math.max(0, Math.min(reader.beats.length - 1, value + delta)); }); }
-			React.useEffect(function () {
-				function onKey(event) {
-					if (event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
-					if (event.key === "Escape") { event.stopPropagation(); props.onClose(); }
-					else if (event.key === "ArrowRight" || event.key === " " || event.key === "Enter") { event.preventDefault(); step(1); }
-					else if (event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
-				}
-				document.addEventListener("keydown", onKey, true);
-				return function () { document.removeEventListener("keydown", onKey, true); };
-			}, [reader.beats.length, reader.index, reader.turn]);
-			// Each beat is read when reading is on; auto play turns the page when it was heard, or after a time by its length.
-			React.useEffect(function () {
-				const beat = reader.beats[reader.index];
-				let active = true, timer = null;
-				const delay = Math.max(1500, Math.min(10000, 400 + 70 * Array.from(beat ? beat.text : "").length));
-				const turn = function (wait) { if (active && auto && !atEnd) timer = window.setTimeout(function () { step(1); }, wait); };
-				if (reading.on && beat && reader.mode !== "skip") tavernSpeech.speak(tavernBeatSpeech(props.sessionId, beat)).then(function (heard) { turn(heard ? 400 : delay); });
-				else turn(delay);
-				return function () { active = false; if (timer !== null) window.clearTimeout(timer); };
-			}, [auto, reader.index, reader.turn, reader.beats, reader.mode, atEnd, reading.on, props.sessionId]);
-			async function send(event) {
-				event.preventDefault();
-				const text = draft.trim();
-				if (!text || sending) return;
-				setSending(true);
-				try { await props.onSubmit(text); setDraft(""); }
-				catch (error) { tavernErrorHub.report("舞台发送", error); }
-				finally { setSending(false); }
-			}
-			const footer = h("div", { className: "dsh-tavern-stage-controls", onClick: function (event) { event.stopPropagation(); } },
-				h("button", { type: "button", onClick: function () { step(-1); }, disabled: reader.index <= 0, "aria-label": "上一句" }, "‹"),
-				h("span", { className: "dsh-tavern-stage-progress" }, reader.beats.length ? (reader.index + 1) + " / " + reader.beats.length : ""),
-				h("button", { type: "button", onClick: function () { step(1); }, disabled: atEnd, "aria-label": "下一句" }, "›"),
-				h("button", { type: "button", className: auto ? "is-on" : "", onClick: function () { setAuto(!auto); }, "aria-pressed": auto }, "自动"),
-				h("button", { type: "button", onClick: function () { reader.setIndex(reader.beats.length - 1, "skip"); tavernSpeech.stop(); } }, "跳过"),
-				h(TavernStageReadButton, { reading: reading }),
-				h(TavernMusicToggle, null),
-				h("span", { className: "dsh-tavern-spacer" }),
-				h("button", { type: "button", onClick: props.onClose }, "退出舞台"));
-			return h("div", { className: "dsh-tavern-stage-overlay", role: "dialog", "aria-modal": "true", "aria-label": "舞台" },
-				h(TavernStageSceneView, { scene: props.scene, view: props.view, sessionId: props.sessionId, data: props.data, beats: reader.beats, index: reader.index, sceneRef: props.sceneRef, onAdvance: function () { step(1); }, footer: footer }),
-				atEnd ? h("form", { className: "dsh-tavern-stage-input", onSubmit: send },
-					h("input", { value: draft, onChange: function (event) { setDraft(event.target.value); }, placeholder: props.generating ? "正在生成下一轮…" : "接下来做什么？", "aria-label": "舞台输入", disabled: sending }),
-					h("button", { type: "submit", disabled: sending || !draft.trim() }, sending ? "发送中…" : "发送")) : null);
-		}
-
+		// Cast material (sprites, avatars, voices) for the stage, edited from 酒馆状态.
 		function readTavernFile(file) {
 			return new Promise(function (resolve, reject) {
 				const reader = new FileReader();
@@ -13837,48 +13485,430 @@ function useTavernStageRuntime(sessionId) {
 				notice ? h("p", { role: "status", className: "dsh-tavern-settings-desc" }, notice) : null);
 		}
 
-		// Two entries open the same fullscreen stage: the chat header's 「舞台」 and 酒馆状态's 「全屏舞台」.
-		function TavernStageEntry(props) {
-			const stage = useTavernStageRuntime(props.sessionId);
-			const [opened, setOpened] = React.useState(false);
-			if (!stage.data || stage.data.enabled === false) return null;
-			const h = React.createElement, open = () => setOpened(true);
-			return h(React.Fragment, null,
-				props.header ? h("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-stage-toggle", title: "全屏舞台", "aria-label": "舞台", onClick: open },
-					h("svg", { viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true, focusable: "false" },
-						h("path", { d: "M3.5 4.5h17M5 4.5c0 4 1.8 6.5 4.5 7.5M19 4.5c0 4-1.8 6.5-4.5 7.5M3.5 19.5h17M7 19.5v-3.5h10v3.5" })),
-					h("span", null, "舞台")) : h("button", { type: "button", className: "dsh-tavern-btn", onClick: open }, "全屏舞台"),
-				opened ? require("react-dom").createPortal(h(TavernStageSession, { ...props, stage, onClose: () => setOpened(false) }), document.body) : null);
-		}
+function tavernCastCharacter(cast, name) {
+  return (cast || []).find(item => item.name === name || (item.aliases || []).includes(name)) || null
+}
 
-		// 酒馆状态 keeps an entry plus cast material, voices and the stage look until the stage settings page.
-		function TavernStageStatus(props) {
-			const stage = useTavernStageRuntime(props.sessionId);
-			const choice = useTavernStageView(props.sessionId);
-			if (!stage.data || stage.data.enabled === false) return null;
-			const h = React.createElement;
-			return h("section", { className: "dsh-tavern-status-section", "aria-label": "舞台素材" }, h(TavernStageEntry, props), h(TavernStageViewSwitch, { choice }),
-				h("details", { className: "dsh-tavern-stage-cast" }, h("summary", null, "角色素材"),
-					h(TavernCastManager, { sessionId: props.sessionId, data: stage.data, onCast: () => tavernStageRuntime.refresh(props.sessionId) })));
-		}
+// Accepted director deltas are the only stage-state input. Reading never resets it.
+function emptyStageState() {
+  return { figures: [], background: null, music: null }
+}
 
-		function TavernStageSession(props) {
-			const { data, scene } = props.stage;
-			const reader = useTavernStageReader(data, props.sessionId);
-			const sceneRef = React.useRef(null);
-			const choice = useTavernStageView(props.sessionId);
-			const session = () => props.sessions?.binding(props.sessionId)?.session;
-			const running = React.useSyncExternalStore(fn => session()?.subscribe(fn) || (() => {}), () => session()?.getSnapshot().running === true);
-			const playback = React.useMemo(() => createStagePerformancePlayback({ play: (event, id) => playTavernStagePerformance(sceneRef.current, event, id) }), [props.sessionId]);
-			React.useEffect(() => () => playback.dispose(), [playback]);
-			React.useEffect(() => {
-				playback.update({ id: props.sessionId + ":" + reader.visit, at: reader.index + 1, mode: reader.mode, events: reader.events });
-			}, [playback, props.sessionId, reader.visit, reader.index, reader.mode, reader.events]);
-			React.useEffect(() => { tavernMusic.play(data.music ? data.music.url : "", { title: data.music ? data.music.name : "" }); }, [data.music && data.music.url]);
-			React.useEffect(() => () => tavernMusic.stop(), []);
-			return React.createElement(TavernStageFullscreen, { scene, data, reader, sceneRef, view: choice.view, sessionId: props.sessionId,
-				generating: props.generating ?? running, onSubmit: text => props.submit(props.sessionId, text), onClose: props.onClose });
+function foldStageState(state, delta) {
+  const next = { ...state, figures: state.figures.map(figure => ({ ...figure })) }
+  if (delta.figures === null) next.figures = []
+  else for (const change of delta.figures || []) {
+    const index = next.figures.findIndex(figure => figure.speaker === change.speaker)
+    if (change.remove) {
+      if (index >= 0) next.figures.splice(index, 1)
+    } else if (index >= 0) {
+      if (change.emotion !== undefined) next.figures[index].emotion = change.emotion
+    } else next.figures.push({ speaker: change.speaker, emotion: change.emotion ?? 'neutral' })
+  }
+  for (const field of ['background', 'music']) if (Object.hasOwn(delta, field)) next[field] = delta[field]
+  return next
+}
+// A page visit owns its timers and animations, never persistent presentation state.
+function createStagePerformancePlayback({ play, schedule = setTimeout, cancel = clearTimeout }) {
+  let visit = null, blocked = false
+  const played = new Set(), pending = new Map(), animations = new Set()
+  function stop() {
+    for (const timer of pending.values()) cancel(timer)
+    pending.clear()
+    for (const animation of animations) animation.cancel()
+    animations.clear()
+  }
+  function update({ id, at, mode, events }) {
+    if (id !== visit) { stop(); played.clear(); visit = id; blocked = false }
+    if (!['page', 'live'].includes(mode)) { blocked = true; stop(); return }
+    if (blocked) return
+    events.forEach((event, ordinal) => {
+      if (event.at !== at || played.has(ordinal) || pending.has(ordinal)) return
+      pending.set(ordinal, schedule(() => {
+        if (visit !== id || blocked) return
+        pending.delete(ordinal)
+        played.add(ordinal)
+        const animation = play(event, id + ':' + ordinal)
+        if (animation) {
+          animations.add(animation)
+          animation.finished.then(() => animations.delete(animation), () => animations.delete(animation))
+        }
+      }, mode === 'page' ? 1000 : 0))
+    })
+  }
+  return { update, dispose() { stop(); visit = null; played.clear() } }
+}
+// The reading position belongs to the session: closing and reopening the stage returns to
+// the same page. A new body opens on its first page live; the first read only restores.
+const EMPTY_STAGE_READER = Object.freeze({ key: "", index: 0, visit: 0, mode: "refresh", auto: false });
+const stageReaderPages = data => data?.turns.at(-1)?.pages || [];
+function nextStageReader(reader, previous, data) {
+	const key = data.turns.at(-1)?.key || "";
+	if (key !== reader.key) return { ...reader, key, index: 0, visit: reader.visit + 1, mode: previous ? "live" : "refresh" };
+	const last = Math.max(0, stageReaderPages(data).length - 1);
+	return reader.index > last ? { ...reader, index: last } : reader;
+}
+
+// A read-only session snapshot. Refresh never clears accepted presentation.
+const EMPTY_STAGE_RUNTIME = Object.freeze({ data: null, scene: null, reader: EMPTY_STAGE_READER, pending: false, error: "" });
+function createStageRuntimeStore({ read, project, changed }) {
+	let state = EMPTY_STAGE_RUNTIME, revision = 0, dirty = false, disposed = false, flight = null, request = null;
+	function publish(next) { state = next; changed(); }
+	function move(reader) { if (!disposed) publish({ ...state, reader: { ...state.reader, ...reader } }); }
+	async function drain() {
+		while (dirty && !disposed) {
+			dirty = false;
+			const token = revision;
+			request = new AbortController();
+			try {
+				const value = await read(request.signal);
+				if (disposed || token !== revision) continue;
+				const data = JSON.stringify(value) === JSON.stringify(state.data) ? state.data : value;
+				const candidate = data === state.data ? state.scene : project(data);
+				const scene = JSON.stringify(candidate) === JSON.stringify(state.scene) ? state.scene : candidate;
+				const reader = data === state.data ? state.reader : nextStageReader(state.reader, state.data, data);
+				publish({ data, scene, reader, pending: false, error: "" });
+			} catch (error) {
+				if (!disposed && token === revision) publish({ ...state, pending: false, error: String(error.message || error) });
+			}
 		}
+	}
+	const store = {
+		getSnapshot: () => state,
+		refresh(reset = false) {
+			if (disposed) return Promise.resolve();
+			revision++; dirty = true;
+			if (reset) { request?.abort(); state = { ...EMPTY_STAGE_RUNTIME, reader: { ...EMPTY_STAGE_READER, visit: state.reader.visit } }; }
+			if (!state.pending) publish({ ...state, pending: true, error: "" });
+			if (!flight) flight = Promise.resolve().then(drain).finally(() => { flight = null; if (dirty && !disposed) return store.refresh(); });
+			return flight;
+		},
+		// Every page turn is a new visit; skip and restore are visits that never play.
+		page(value, mode = "page") {
+			const current = state.reader.index, last = Math.max(0, stageReaderPages(state.data).length - 1);
+			const index = Math.max(0, Math.min(last, typeof value === "function" ? value(current) : value));
+			if (index !== current || mode !== "page") move({ index, visit: state.reader.visit + 1, mode });
+		},
+		setAuto(auto) { if (state.reader.auto !== auto) move({ auto }); },
+		restore() { move({ visit: state.reader.visit + 1, mode: "refresh", auto: false }); },
+		dispose() { disposed = true; dirty = false; revision++; request?.abort(); publish(EMPTY_STAGE_RUNTIME); }
+	};
+	return store;
+}
+
+// While a view is attached, its session plays the current page: one-shots, reading aloud,
+// auto paging and music. Detaching releases every timer, voice, animation and track.
+function createStageRuntimePlayer({ store, animate, speech, music, schedule = setTimeout, cancel = clearTimeout }) {
+	const performances = createStagePerformancePlayback({ play: animate, schedule, cancel });
+	let attached = true, plan = "", spoken = "", heard = Promise.resolve(false), track = null, timer = null, token = 0;
+	function halt() { token++; if (timer !== null) cancel(timer); timer = null; }
+	function update() {
+		if (!attached) return;
+		const { data, reader } = store.getSnapshot();
+		const latest = data?.turns.at(-1), pages = latest?.pages || [], beat = pages[reader.index];
+		performances.update({ id: reader.key + ":" + reader.visit, at: reader.index + 1, mode: data ? reader.mode : "refresh", events: latest?.performances || [] });
+		const url = data?.music?.url || "";
+		if (url !== track) { track = url; music.play(data?.music || null); }
+		const voice = data && beat && reader.mode !== "skip" && speech.on() ? JSON.stringify([reader.key, reader.visit, beat]) : "";
+		if (!voice && spoken) { spoken = ""; speech.stop(); }
+		const atEnd = reader.index >= pages.length - 1, next = JSON.stringify([voice, reader.visit, reader.auto, atEnd]);
+		if (next === plan) return;
+		plan = next; halt();
+		const current = token, auto = reader.auto && !atEnd;
+		const delay = Math.max(1500, Math.min(10000, 400 + 70 * Array.from(beat ? beat.text : "").length));
+		if (voice && voice !== spoken) { spoken = voice; heard = speech.speak(beat); }
+		// Auto paging waits for the line to be heard, or for a time by its length.
+		(voice ? heard : Promise.resolve(false)).then(ok => {
+			if (auto && current === token) timer = schedule(() => { timer = null; store.page(index => index + 1); }, ok ? 400 : delay);
+		});
+	}
+	function detach() {
+		if (!attached) return;
+		attached = false; halt(); performances.dispose(); music.stop();
+		if (spoken) speech.stop();
+	}
+	return { update, detach };
+}
+
+// Native bindings own stores, not React mounts. Only open the selected session;
+// keep previously opened sessions until removal, and retire replaced bindings.
+function createStageRuntimeSessions({ read, project, watch }) {
+	const records = new Map(), listeners = new Map();
+	function notify(id) { for (const fn of listeners.get(id) || []) fn(); }
+	function release(id) {
+		const record = records.get(id);
+		record.player?.detach(); record.stop(); records.delete(id); record.store.dispose();
+	}
+	return {
+		getSnapshot: id => records.get(id)?.store.getSnapshot() || EMPTY_STAGE_RUNTIME,
+		subscribe(id, fn) {
+			if (!listeners.has(id)) listeners.set(id, new Set());
+			listeners.get(id).add(fn);
+			return () => { const set = listeners.get(id); set.delete(fn); if (!set.size) listeners.delete(id); };
+		},
+		refresh: id => records.get(id)?.store.refresh(),
+		page: (id, value, mode) => records.get(id)?.store.page(value, mode),
+		setAuto: (id, auto) => records.get(id)?.store.setAuto(auto),
+		sync: id => records.get(id)?.player?.update(),
+		// One attached view plays a session. Reopening restores its page without replaying it.
+		attach(id, view) {
+			const record = records.get(id);
+			if (!record) return () => {};
+			record.player?.detach();
+			const player = record.player = createStageRuntimePlayer({ store: record.store, ...view });
+			record.store.restore();
+			return () => { player.detach(); if (record.player === player) record.player = null; };
+		},
+		start(sessions) {
+			function reconcile() {
+				const snapshot = sessions.list.getSnapshot(), rows = snapshot.byId || {};
+				const selected = Object.values(rows).find(row => row.retainedBy?.mainView > 0)?.id || snapshot.current;
+				for (const id of records.keys()) if (!rows[id] && id !== selected) release(id);
+				const ids = new Set(records.keys());
+				if (selected && rows[selected]?.origin !== "subagent") ids.add(selected);
+				for (const id of ids) {
+					const binding = sessions.binding(id), previous = records.get(id);
+					if (previous?.binding === binding) continue;
+					if (previous) release(id);
+					if (!binding) continue;
+					const store = createStageRuntimeStore({ read: signal => read(id, signal), project, changed: () => { record.player?.update(); notify(id); } });
+					const record = { binding, store, player: null, stop() {} };
+					records.set(id, record);
+					record.stop = watch(id, binding, reset => store.refresh(reset));
+					void store.refresh();
+				}
+			}
+			const stop = sessions.list.subscribe(reconcile);
+			reconcile();
+			return () => { stop(); for (const id of records.keys()) release(id); };
+		}
+	};
+}
+// Resolve static presentation once per accepted snapshot, not in each stage view.
+function stageRuntimeScene(data) {
+	return { background: data.background || data.card.imageUrl || "", backdrop: Boolean(data.background),
+		figures: data.stage.figures.map(figure => ({ name: figure.speaker, url: tavernCastImage(data, figure.speaker, figure.emotion) })) };
+}
+
+// Shared with the cast editor; image selection is not a second scene projection.
+function tavernCastImage(data, name, emotion, preferAvatar) {
+	const character = tavernCastCharacter(data.cast, name);
+	const sprites = character ? character.sprites || {} : {};
+	const sprite = sprites[emotion] || sprites.neutral || Object.values(sprites)[0] || "";
+	const avatar = character && (character.avatars || {})[emotion] || character && character.avatarUrl || (name === data.card.name ? data.card.imageUrl : "");
+	return preferAvatar ? avatar || sprite : sprite || avatar;
+}
+
+function watchStageRuntime(sessionId, binding, refresh) {
+	let authority = null, running = binding.session.getSnapshot().running;
+	const wake = () => refresh();
+	const selection = liveTavernView.select(sessionId, [["chatId"], ["card", "path"], ["suppressedDshTurns"], ["regeneratedDshTurns"], ["settlementTurn"], ["updatedAt"]]);
+	const stops = [selection.subscribe(() => {
+		const view = selection.getSnapshot().view;
+		if (!view) return;
+		// An adopted regeneration replaces text, not the scene's authority domain.
+		const withdrawn = (view.suppressedDshTurns || []).filter(turn => !Object.values(view.regeneratedDshTurns || {}).includes(turn));
+		const next = JSON.stringify([view.chatId, view.card?.path, withdrawn]);
+		const reset = authority !== null && authority !== next;
+		authority = next; refresh(reset);
+	}), binding.session.subscribe(() => {
+		const next = binding.session.getSnapshot().running;
+		if (next !== running) { running = next; wake(); }
+	}), tavernCoordination.subscribe(sessionId, wake), tavernSessionSignals.subscribe(sessionId, "cast", wake, undefined, wake)];
+	for (const event of ["dsh-tavern-settings-changed", "dsh-tavern-card-stage-changed", "focus"]) window.addEventListener(event, wake);
+	// Reconcile missed notifications without creating a director job or writing history.
+	const timer = window.setInterval(() => { if (!document.hidden) wake(); }, 5000);
+	return () => {
+		stops.forEach(stop => stop()); window.clearInterval(timer);
+		for (const event of ["dsh-tavern-settings-changed", "dsh-tavern-card-stage-changed", "focus"]) window.removeEventListener(event, wake);
+	};
+}
+const tavernStageRuntime = createStageRuntimeSessions({
+	read: (id, signal) => rpc("castStage", { count: 5 }, id, { signal }), project: stageRuntimeScene, watch: watchStageRuntime
+});
+function useTavernStageRuntime(sessionId) {
+	const subscribe = React.useCallback(fn => tavernStageRuntime.subscribe(sessionId, fn), [sessionId]);
+	const snapshot = React.useCallback(() => tavernStageRuntime.getSnapshot(sessionId), [sessionId]);
+	return React.useSyncExternalStore(subscribe, snapshot, snapshot);
+}
+
+// The stage scene, in Tavern's look or a plugin's registerStageView.
+function TavernStageFigure(props) {
+	const [failed, setFailed] = React.useState("");
+	const h = React.createElement;
+	const url = failed === props.url ? "" : props.url;
+	return h("div", { className: "dsh-tavern-stage-figure" + (props.dim ? " is-dim" : ""), "data-speaker": props.name },
+		h("div", { className: "dsh-tavern-stage-figure-body" },
+			url ? h("img", { key: url, src: url, alt: props.name, onError: function () { setFailed(props.url); } })
+				: h("span", { className: "dsh-tavern-stage-figure-letter", style: { "--dsh-cast-hue": tavernCastHue(props.name) } }, Array.from(props.name)[0] || "?")));
+}
+
+/** One stage frame: who is on stage at this beat, and the text box. */
+function TavernStageScene(props) {
+	const h = React.createElement;
+	const data = props.data, beats = props.beats, index = props.index;
+	const beat = beats[index] || null;
+	const scene = props.scene;
+	return h("div", { ref: props.sceneRef, className: "dsh-tavern-stage-scene", onClick: props.onAdvance },
+		h("div", { className: "dsh-tavern-stage-backdrop" + (scene.backdrop ? " is-scene" : ""), style: scene.background ? { "--dsh-stage-backdrop": "url(\"" + scene.background + "\")" } : undefined }),
+		h("div", { className: "dsh-tavern-stage-figures" }, scene.figures.map(function (figure) {
+			const name = figure.name;
+			const speaker = beat && tavernCastCharacter(data.cast, beat.speaker);
+			const speaking = beat && (speaker ? speaker.name : beat.speaker) === name;
+			return h(TavernStageFigure, { key: name, name: name, url: figure.url, dim: beat && beat.kind === "line" && !speaking });
+		})),
+		beat ? h("div", { className: "dsh-tavern-stage-textbox" },
+			beat.kind === "line" ? h("div", { className: "dsh-tavern-stage-name", style: { "--dsh-cast-hue": tavernCastHue(beat.speaker) } }, beat.speaker,
+				TAVERN_CAST_EMOTIONS[beat.emotion] && beat.emotion !== "neutral" ? h("span", { className: "dsh-tavern-cast-emotion" }, TAVERN_CAST_EMOTIONS[beat.emotion]) : null) : null,
+			h("div", { key: index, className: "dsh-tavern-stage-text" + (beat.kind === "narration" ? " is-narration" : "") }, beat.text),
+			props.footer || null)
+			: h("div", { className: "dsh-tavern-stage-textbox is-empty" }, props.empty || "还没有可以演出的正文"));
+}
+
+/** The stage data as plugins see it (tavernUi.getStage). */
+function tavernStagePublicData(data) {
+	return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", music: data.music, stage: data.stage, characters: data.cast || [], turns: data.turns || [] };
+}
+
+// The look of the stage: Tavern's own, or a plugin's registerStageView; remembered per browser.
+// With no choice made, a plugin view is used: installing one is asking for it.
+function useTavernStageView(sessionId) {
+	return useTavernPluginViewChoice(tavernUiExtensions.stageViews(), "dsh-tavern-stage-view", sessionId);
+}
+
+function TavernStageViewSwitch(props) {
+	if (!props.choice.views.length) return null;
+	return React.createElement(TavernPluginViewSwitch, { choice: props.choice, label: "舞台样式", className: "dsh-tavern-stage-view-switch" });
+}
+
+function TavernStagePluginScene(props) {
+	const rendered = props.view.render(props.input);
+	return rendered === null || rendered === undefined ? props.fallback : rendered;
+}
+
+/** The scene in the chosen look; a plugin view that fails or returns null shows Tavern's own. */
+function TavernStageSceneView(props) {
+	const builtin = React.createElement(TavernStageScene, props);
+	if (!props.view) return builtin;
+	const beat = props.beats[props.index] || null;
+	const input = { gameId: props.sessionId, stage: tavernStagePublicData(props.data), beats: props.beats, index: props.index, beat: beat,
+		fullscreen: true, advance: props.onAdvance, footer: props.footer || null };
+	return React.createElement(tavernPluginBoundary(), { key: props.view.key, owner: props.view.owner, fallback: builtin },
+		React.createElement(TavernStagePluginScene, { view: props.view, input: input, fallback: builtin }));
+}
+
+function playTavernStagePerformance(root, event, id) {
+	if (!root || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+	const target = event.op === "screen.play" ? root : Array.from(root.querySelectorAll("[data-speaker]")).find(function (node) { return node.dataset.speaker === event.actor; });
+	if (!target) return null;
+	const frames = event.op === "screen.play" ? ["none", "translateX(-3px)", "translateX(3px)", "translateX(-2px)", "none"]
+		: event.motion === "nod" ? ["none", "translateY(2%)", "none", "translateY(1%)", "none"] : ["none", "translateY(-6%)", "none"];
+	return target.animate(frames.map(function (transform) { return { transform: transform }; }), { id: "stage:" + id, duration: event.op === "screen.play" ? 450 : 650, easing: "ease-in-out" });
+}
+
+// Reading aloud is on once voicing is; the 朗读 button turns it off for this browser.
+const TAVERN_STAGE_READ_KEY = "dsh-tavern-stage-read";
+function useTavernStageReading() {
+	const speech = useTavernSpeechSettings();
+	const [reading, setReading] = React.useState(() => { try { return window.localStorage.getItem(TAVERN_STAGE_READ_KEY) !== "0"; } catch (_) { return true; } });
+	function toggle() {
+		setReading(!reading);
+		try { window.localStorage.setItem(TAVERN_STAGE_READ_KEY, reading ? "0" : "1"); } catch (_) {}
+	}
+	const available = Boolean(speech && speech.enabled);
+	return { available, on: available && reading, toggle };
+}
+function tavernBeatSpeech(sessionId, beat) {
+	return beat.kind === "line" ? { sessionId: sessionId, speaker: beat.speaker, text: (beat.quotes || []).join(" ") || beat.text, emotion: beat.emotion }
+		: { sessionId: sessionId, text: beat.text, narration: true };
+}
+function TavernStageReadButton(props) {
+	if (!props.reading.available) return null;
+	return React.createElement("button", { type: "button", className: props.reading.on ? "is-on" : "", "aria-pressed": props.reading.on, onClick: props.reading.toggle }, "朗读");
+}
+
+// The fullscreen stage only shows its session: page, auto paging and playback belong to the
+// session runtime, which releases them when the view closes and restores the page on reopen.
+function TavernStageScreen(props) {
+	const h = React.createElement, id = props.sessionId;
+	const { data, scene, reader } = useTavernStageRuntime(id);
+	const reading = useTavernStageReading(), choice = useTavernStageView(id);
+	const sceneRef = React.useRef(null), readingOn = React.useRef(reading.on);
+	readingOn.current = reading.on;
+	const [draft, setDraft] = React.useState(""), [sending, setSending] = React.useState(false);
+	const session = () => props.sessions?.binding(id)?.session;
+	const running = React.useSyncExternalStore(fn => session()?.subscribe(fn) || (() => {}), () => session()?.getSnapshot().running === true);
+	React.useEffect(() => tavernStageRuntime.attach(id, {
+		animate: (event, key) => playTavernStagePerformance(sceneRef.current, event, key),
+		speech: { on: () => readingOn.current, speak: beat => tavernSpeech.speak(tavernBeatSpeech(id, beat)), stop: () => tavernSpeech.stop() },
+		music: { play: track => tavernMusic.play(track ? track.url : "", { title: track ? track.name : "" }), stop: () => tavernMusic.stop() }
+	}), [id]);
+	React.useEffect(() => { tavernStageRuntime.sync(id); }, [id, reading.on]);
+	const latest = data.turns[data.turns.length - 1];
+	const beats = React.useMemo(() => latest ? latest.pages.map(page => ({ turn: latest.turn, ...page })) : [], [latest]);
+	const atEnd = reader.index >= beats.length - 1, step = delta => tavernStageRuntime.page(id, index => index + delta);
+	React.useEffect(() => {
+		function onKey(event) {
+			if (event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
+			if (event.key === "Escape") { event.stopPropagation(); props.onClose(); }
+			else if (event.key === "ArrowRight" || event.key === " " || event.key === "Enter") { event.preventDefault(); step(1); }
+			else if (event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
+		}
+		document.addEventListener("keydown", onKey, true);
+		return () => document.removeEventListener("keydown", onKey, true);
+	}, [id, props.onClose]);
+	async function send(event) {
+		event.preventDefault();
+		const text = draft.trim();
+		if (!text || sending) return;
+		setSending(true);
+		try { await props.submit(id, text); setDraft(""); }
+		catch (error) { tavernErrorHub.report("舞台发送", error); }
+		finally { setSending(false); }
+	}
+	const footer = h("div", { className: "dsh-tavern-stage-controls", onClick: event => event.stopPropagation() },
+		h("button", { type: "button", onClick: () => step(-1), disabled: reader.index <= 0, "aria-label": "上一句" }, "‹"),
+		h("span", { className: "dsh-tavern-stage-progress" }, beats.length ? (reader.index + 1) + " / " + beats.length : ""),
+		h("button", { type: "button", onClick: () => step(1), disabled: atEnd, "aria-label": "下一句" }, "›"),
+		h("button", { type: "button", className: reader.auto ? "is-on" : "", onClick: () => tavernStageRuntime.setAuto(id, !reader.auto), "aria-pressed": reader.auto }, "自动"),
+		h("button", { type: "button", onClick: () => tavernStageRuntime.page(id, beats.length - 1, "skip") }, "跳过"),
+		h(TavernStageReadButton, { reading }),
+		h(TavernMusicToggle, null),
+		h("span", { className: "dsh-tavern-spacer" }),
+		h("button", { type: "button", onClick: props.onClose }, "退出舞台"));
+	const generating = props.generating ?? running;
+	return h("div", { className: "dsh-tavern-stage-overlay", role: "dialog", "aria-modal": "true", "aria-label": "舞台" },
+		h(TavernStageSceneView, { scene, view: choice.view, sessionId: id, data, beats, index: reader.index, sceneRef, onAdvance: () => step(1), footer }),
+		atEnd ? h("form", { className: "dsh-tavern-stage-input", onSubmit: send },
+			h("input", { value: draft, onChange: event => setDraft(event.target.value), placeholder: generating ? "正在生成下一轮…" : "接下来做什么？", "aria-label": "舞台输入", disabled: sending }),
+			h("button", { type: "submit", disabled: sending || !draft.trim() }, sending ? "发送中…" : "发送")) : null);
+}
+
+// Two entries open the same fullscreen stage: the chat header's 「舞台」 and 酒馆状态's 「全屏舞台」.
+function TavernStageEntry(props) {
+	const stage = useTavernStageRuntime(props.sessionId);
+	const [opened, setOpened] = React.useState(false);
+	const close = React.useCallback(() => setOpened(false), []);
+	if (!stage.data || stage.data.enabled === false) return null;
+	const h = React.createElement, open = () => setOpened(true);
+	return h(React.Fragment, null,
+		props.header ? h("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-stage-toggle", title: "全屏舞台", "aria-label": "舞台", onClick: open },
+			h("svg", { viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true, focusable: "false" },
+				h("path", { d: "M3.5 4.5h17M5 4.5c0 4 1.8 6.5 4.5 7.5M19 4.5c0 4-1.8 6.5-4.5 7.5M3.5 19.5h17M7 19.5v-3.5h10v3.5" })),
+			h("span", null, "舞台")) : h("button", { type: "button", className: "dsh-tavern-btn", onClick: open }, "全屏舞台"),
+		opened ? require("react-dom").createPortal(h(TavernStageScreen, { ...props, onClose: close }), document.body) : null);
+}
+
+// 酒馆状态 keeps an entry plus cast material, voices and the stage look until the stage settings page.
+function TavernStageStatus(props) {
+	const stage = useTavernStageRuntime(props.sessionId);
+	const choice = useTavernStageView(props.sessionId);
+	if (!stage.data || stage.data.enabled === false) return null;
+	const h = React.createElement;
+	return h("section", { className: "dsh-tavern-status-section", "aria-label": "舞台素材" }, h(TavernStageEntry, props), h(TavernStageViewSwitch, { choice }),
+		h("details", { className: "dsh-tavern-stage-cast" }, h("summary", null, "角色素材"),
+			h(TavernCastManager, { sessionId: props.sessionId, data: stage.data, onCast: () => tavernStageRuntime.refresh(props.sessionId) })));
+}
 
         function composerOffsetPx(layoutHeight, visualOffsetTop, rectTop) {
             // DOMRect 和 fixed 的定位都基于布局视口；offsetTop 已包含在 rectTop 中，不能再次相加。

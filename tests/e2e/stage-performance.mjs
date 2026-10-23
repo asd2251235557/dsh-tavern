@@ -64,6 +64,16 @@ try {
         await settled()
         assert.equal(await count(), baseline ? 0 : 3, 'rapid paging cancels the intermediate page')
         await page.screenshot({ path: join(output, 'fullscreen-performance.png') })
+        // The reading position belongs to the session; closing releases playback and music.
+        await page.keyboard.press('Escape'); await full.waitFor({ state: 'detached' })
+        await page.waitForFunction(() => window.stageTestAudio.length > 0 && window.stageTestAudio.every(audio => audio.paused))
+        await page.getByRole('button', { name: '舞台', exact: true }).click(); await full.waitFor()
+        await full.locator('.dsh-tavern-stage-text').filter({ hasText: 'A small leap.' }).waitFor()
+        assert.equal(await full.locator('.dsh-tavern-stage-progress').innerText(), '3 / 3', 'reopening returns to the page it left')
+        await settled()
+        assert.equal(await count(), baseline ? 0 : 3, 'reopening on a page does not replay it')
+        await page.waitForFunction(() => window.stageTestAudio.some(audio => !audio.paused && audio.currentTime > 0))
+        await page.screenshot({ path: join(output, 'reopened-position.png') })
         if (!baseline) {
           await stage.getByRole('button', { name: '上一句', exact: true }).click()
           await stage.getByRole('button', { name: '跳过', exact: true }).click()
@@ -89,7 +99,7 @@ try {
         await page.locator('.dsh-tavern-stage-overlay').waitFor()
         await page.screenshot({ path: join(output, 'mobile-stage.png') })
         await page.setViewportSize({ width: 1280, height: 900 })
-        return { baseline, idle, receipts, refreshSilent: true, readOnly: true, skipSilent: !baseline, reducedMotion: !baseline }
+        return { baseline, idle, receipts, refreshSilent: true, readOnly: true, reopenedPosition: true, skipSilent: !baseline, reducedMotion: !baseline }
       }
     })
     console.log(JSON.stringify({ baseline, continuity: true, performances: !baseline, output }))
